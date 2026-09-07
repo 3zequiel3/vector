@@ -4,6 +4,7 @@
 
 **El límite de alcance para agentes de código.** Una capa de control determinística que compila un alcance declarado en una denegación dura, audita lo que realmente cambió con una operación de conjuntos que no puede fallar, y se corre del camino.
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
 [![Tests](https://img.shields.io/badge/tests-42-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)

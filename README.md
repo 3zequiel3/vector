@@ -4,6 +4,7 @@
 
 **The scope boundary for AI coding agents.** A deterministic control layer that compiles a declared scope into a hard denial, audits what actually changed with a set operation that cannot fail, and gets out of the way.
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
 [![Tests](https://img.shields.io/badge/tests-42-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
