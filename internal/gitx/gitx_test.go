@@ -267,3 +267,123 @@ func TestNumstatAgainstAnExplicitBase(t *testing.T) {
 		t.Errorf("a_test.go against base = %v, want [0 3]", got)
 	}
 }
+
+// quotePath turns on the setting that produced the bug these tests pin.
+//
+// It is git's default, but a test that relies on a default proves nothing the
+// day someone's environment changes it: the test would pass while checking
+// nothing. Setting it explicitly is what makes the assertion mean something.
+func quotePath(t *testing.T, root string) {
+	t.Helper()
+	cmd := exec.Command("git", "config", "core.quotePath", "true")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v: %s", err, out)
+	}
+}
+
+func has(files []string, want string) bool {
+	for _, f := range files {
+		if f == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestChangedFilesReturnsNonASCIIPathsUnquoted(t *testing.T) {
+	// A quoted path is a different string, and a different string matches
+	// different patterns. Left quoted, a file inside the declared boundary is
+	// reported as out of scope — and under strict enforcement, denied. That is
+	// the tool refusing legitimate work, which is worse than not checking.
+	root := repo(t)
+	quotePath(t, root)
+	write(t, root, "src/año/índice.ts", "1\n")
+	commit(t, root)
+	write(t, root, "src/año/índice.ts", "1\n2\n")
+
+	files, err := ChangedFiles(root, "")
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	if !has(files, "src/año/índice.ts") {
+		t.Errorf("files = %v, want the path under its real name", files)
+	}
+}
+
+func TestChangedFilesReturnsUntrackedNonASCIIPathsUnquoted(t *testing.T) {
+	// The untracked half runs a different git command, and had the same bug.
+	// A brand-new file outside the boundary is exactly the drift vector exists
+	// to catch, so this half must not be the one that misses it.
+	root := repo(t)
+	quotePath(t, root)
+	write(t, root, "keep.txt", "x\n")
+	commit(t, root)
+	write(t, root, "src/año/nuevo.ts", "1\n")
+
+	files, err := ChangedFiles(root, "")
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	if !has(files, "src/año/nuevo.ts") {
+		t.Errorf("files = %v, want the untracked path under its real name", files)
+	}
+}
+
+func TestAllFilesReturnsNonASCIIPathsUnquoted(t *testing.T) {
+	// doctor uses AllFiles to warn about scope patterns that match nothing.
+	// Quoted paths would make it report a working pattern as a probable typo.
+	root := repo(t)
+	quotePath(t, root)
+	write(t, root, "src/año/índice.ts", "1\n")
+	commit(t, root)
+
+	files, err := AllFiles(root)
+	if err != nil {
+		t.Fatalf("AllFiles: %v", err)
+	}
+	if !has(files, "src/año/índice.ts") {
+		t.Errorf("files = %v, want the path under its real name", files)
+	}
+}
+
+func TestChangedFilesKeepsAPathWithSurroundingSpace(t *testing.T) {
+	// Under -z each record is already exactly the path. Trimming it — which is
+	// what the newline-separated version had to do — would rename a legal file
+	// into one that matches no pattern.
+	root := repo(t)
+	write(t, root, " leading.txt", "1\n")
+	commit(t, root)
+	write(t, root, " leading.txt", "1\n2\n")
+
+	files, err := ChangedFiles(root, "")
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	if !has(files, " leading.txt") {
+		t.Errorf("files = %v, want the leading space preserved", files)
+	}
+}
+
+func TestChangedFilesStillSeesOrdinaryPaths(t *testing.T) {
+	// The mirror case: changing the separator must not lose the common one.
+	root := repo(t)
+	write(t, root, "a.txt", "1\n")
+	write(t, root, "dir/b.txt", "1\n")
+	commit(t, root)
+	write(t, root, "a.txt", "2\n")
+	write(t, root, "untracked.txt", "1\n")
+
+	files, err := ChangedFiles(root, "")
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	for _, want := range []string{"a.txt", "untracked.txt"} {
+		if !has(files, want) {
+			t.Errorf("files = %v, missing %q", files, want)
+		}
+	}
+	if has(files, "dir/b.txt") {
+		t.Errorf("files = %v, contains an unchanged file", files)
+	}
+}

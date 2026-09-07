@@ -1,0 +1,7 @@
+objective = "a path git had to quote is still the same path: stop reporting non-ASCII files as out of scope"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/gitx/**",
+]

@@ -47,19 +47,19 @@ func ChangedFiles(dir, base string) ([]string, error) {
 	// Tracked modifications, staged and unstaged. On a repository with no
 	// commits yet there is no HEAD to diff against, so tracked changes are
 	// simply everything in the index.
-	diffArgs := []string{"diff", "--name-only", "--no-renames", ref}
+	diffArgs := []string{"diff", "--name-only", "--no-renames", "-z", ref}
 	if base == "" && !hasHEAD(dir) {
-		diffArgs = []string{"diff", "--name-only", "--no-renames", "--cached"}
+		diffArgs = []string{"diff", "--name-only", "--no-renames", "-z", "--cached"}
 	}
 	if out, err := run(dir, diffArgs...); err == nil {
-		addLines(set, out)
+		addPaths(set, out)
 	} else {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
 
 	// Untracked but not ignored.
-	if out, err := run(dir, "ls-files", "--others", "--exclude-standard"); err == nil {
-		addLines(set, out)
+	if out, err := run(dir, "ls-files", "--others", "--exclude-standard", "-z"); err == nil {
+		addPaths(set, out)
 	}
 
 	files := make([]string, 0, len(set))
@@ -163,13 +163,13 @@ func count(field string) int {
 // misleading negative.
 func AllFiles(dir string) ([]string, error) {
 	set := map[string]struct{}{}
-	out, err := run(dir, "ls-files")
+	out, err := run(dir, "ls-files", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
-	addLines(set, out)
-	if out, err := run(dir, "ls-files", "--others", "--exclude-standard"); err == nil {
-		addLines(set, out)
+	addPaths(set, out)
+	if out, err := run(dir, "ls-files", "--others", "--exclude-standard", "-z"); err == nil {
+		addPaths(set, out)
 	}
 	files := make([]string, 0, len(set))
 	for f := range set {
@@ -184,11 +184,15 @@ func hasHEAD(dir string) bool {
 	return err == nil
 }
 
-func addLines(set map[string]struct{}, out string) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			set[filepath.ToSlash(line)] = struct{}{}
+// addPaths collects NUL-separated paths.
+//
+// Nothing is trimmed. Under -z each record is already exactly the path, and a
+// filename may legitimately begin or end with a space — trimming would quietly
+// rename it into one that matches nothing.
+func addPaths(set map[string]struct{}, out string) {
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			set[filepath.ToSlash(p)] = struct{}{}
 		}
 	}
 }
