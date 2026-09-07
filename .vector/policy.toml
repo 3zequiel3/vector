@@ -1,0 +1,47 @@
+# Vector — repository contract.
+#
+# [stack] and [commands] are detected: `vector init` regenerates them.
+# [scope] and [mode] are yours: preserved verbatim across runs.
+
+[stack]
+languages = [
+  "go",
+]
+
+[stack.package_manager]
+name = "go"
+source = "lockfile"
+lockfile = "go.sum"
+# declared = ""  (no local evidence)
+installed = "1.27.1"
+
+[stack.runtime]
+declared = "1.27.1"
+installed = "1.27.1"
+
+# Verification commands, read from the project's own manifests.
+# Vector invokes them; it never invents them. Empty = not found.
+[commands]
+test = "go test ./..."
+# typecheck = ""  (no local evidence)
+build = "go build ./..."
+lint = "go vet ./..."
+
+[scope]
+# Always denied, even under a wide scope: an agent with write access
+# to the configuration that constrains it can weaken that constraint.
+always_forbidden = [
+  ".vector/**",
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".claude/hooks/**",
+  ".codex/hooks.json",
+  ".cursor/hooks.json",
+  ".env",
+  ".env.*",
+]
+expansion_requires_evidence = true
+
+[mode]
+# advisory: report and continue. strict: a violation is a hard failure.
+enforcement = "advisory"
