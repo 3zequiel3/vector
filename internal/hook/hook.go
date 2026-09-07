@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/3zequiel3/vector/internal/audit"
@@ -25,10 +27,14 @@ import (
 // Event is the subset of an agent's hook payload that vector reads. The field
 // names follow Claude Code, and other agents are mapped onto them by adapters.
 type Event struct {
-	HookEventName string          `json:"hook_event_name"`
-	CWD           string          `json:"cwd"`
-	ToolName      string          `json:"tool_name"`
-	ToolInput     json.RawMessage `json:"tool_input"`
+	HookEventName string `json:"hook_event_name"`
+	CWD           string `json:"cwd"`
+	// SessionID identifies the agent conversation. vector reads it so that
+	// "this session was already asked to declare a scope" is remembered per
+	// session: two agents working the same repository each get their own ask.
+	SessionID string          `json:"session_id"`
+	ToolName  string          `json:"tool_name"`
+	ToolInput json.RawMessage `json:"tool_input"`
 }
 
 type toolInput struct {
@@ -103,12 +109,13 @@ func preTool(root string, e Event) *hookOutput {
 	rules := scope.BuildRuleset(pol, sc)
 	strict := pol.Mode.Enforcement == "strict"
 
-	var outOfScope []string
+	var outOfScope, inRepo []string
 	for _, p := range paths {
 		rel, err := scope.Normalize(root, p)
 		if err != nil {
 			continue // outside the repository; not vector's boundary to police
 		}
+		inRepo = append(inRepo, rel)
 		switch d, pat := rules.Decide(rel); d {
 		case scope.Forbidden:
 			// A forbidden path is denied in every mode. These are the rules
@@ -122,6 +129,14 @@ func preTool(root string, e Event) *hookOutput {
 		case scope.OutOfScope:
 			outOfScope = append(outOfScope, rel)
 		}
+	}
+	// An undeclared ruleset cannot report anything out of scope, so without
+	// this branch enforcement quietly does nothing at all: the agent skips the
+	// session-start suggestion and every later check has no boundary to check
+	// against. The first write is the moment the boundary is finally
+	// decidable, so that is where vector asks for it.
+	if !rules.Declared {
+		return undeclared(root, e, inRepo, strict)
 	}
 	if len(outOfScope) == 0 {
 		return nil
@@ -149,6 +164,111 @@ func preTool(root string, e Event) *hookOutput {
 				"and record it with `vector observe \"<note>\"`.",
 			strings.Join(outOfScope, ", "), rules.TaskID),
 	}
+}
+
+// undeclared answers a write made with no scope in force.
+//
+// It denies once, with the exact command to run, and then gets out of the way.
+// Denying every time would be the more principled-looking choice and the wrong
+// one: the hook cannot explain itself any better on the second attempt, so an
+// agent that did not understand the first message would spend the whole turn
+// failing against a wall. One clear ask, then work continues and `vector audit`
+// reports NO_SCOPE_DECLARED honestly at the end.
+//
+// strict is the exception. There the boundary is mandatory, so the denial
+// repeats until a scope exists.
+func undeclared(root string, e Event, paths []string, strict bool) *hookOutput {
+	if len(paths) == 0 {
+		return nil
+	}
+	if !strict {
+		// The hook is a fresh process per tool call, so "already asked" has to
+		// live on disk. If it cannot be recorded, vector says nothing at all:
+		// a denial it cannot remember is a denial it would repeat forever.
+		if alreadyNudged(root, e.SessionID) || !recordNudge(root, e.SessionID) {
+			return nil
+		}
+	}
+	return &hookOutput{
+		HookEventName:      "PreToolUse",
+		PermissionDecision: "deny",
+		PermissionDecisionReason: fmt.Sprintf(
+			"vector: no scope is declared, and this writes %s.\n"+
+				"Declare the boundary before writing, covering every file this task needs "+
+				"— not just this one:\n"+
+				"  vector scope new <short-id> -o \"<objective>\" -w \"<pattern>\"\n"+
+				"Repeat -w for each additional pattern. Then retry this write.",
+			strings.Join(paths, ", ")),
+	}
+}
+
+// nudgeState is the file where vector remembers which sessions have already
+// been asked to declare a scope.
+//
+// It holds one short, sanitised session id per line and is only ever appended
+// to, so two concurrent sessions cannot damage each other's entry. Every read
+// failure — missing, unreadable, truncated, full of nonsense — means "not
+// asked yet": one extra ask costs a single explained denial, while failing a
+// tool call over bookkeeping costs the user their turn.
+func nudgeState(root string) string {
+	return filepath.Join(root, ".vector", "nudged")
+}
+
+func alreadyNudged(root, session string) bool {
+	data, err := os.ReadFile(nudgeState(root))
+	if err != nil {
+		return false
+	}
+	key := sessionKey(session)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// recordNudge remembers that this session has been asked, and reports whether
+// the record actually reached the disk. The caller denies only on true, so an
+// unwritable repository degrades to silence rather than to a loop.
+func recordNudge(root, session string) bool {
+	dir := filepath.Join(root, ".vector")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	f, err := os.OpenFile(nudgeState(root), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false
+	}
+	if _, err := f.WriteString(sessionKey(session) + "\n"); err != nil {
+		f.Close()
+		return false
+	}
+	if err := f.Close(); err != nil {
+		return false
+	}
+	return true
+}
+
+// sessionKey reduces an agent's session id to something safe to keep on one
+// line of a state file. An agent that sends no id still gets exactly one ask,
+// under a shared key: asking one session too few is better than a loop.
+func sessionKey(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		if b.Len() >= 128 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "-"
+	}
+	return b.String()
 }
 
 // targets returns the paths a tool call would write.

@@ -176,10 +176,10 @@ func TestCurrentIgnoresAPointerToADeletedScope(t *testing.T) {
 	}
 }
 
-func TestInitGitignoresTheActiveTaskPointer(t *testing.T) {
-	// The pointer is per-developer working state, like .git/HEAD. Committing it
+func TestInitGitignoresLocalState(t *testing.T) {
+	// These are per-developer working state, like .git/HEAD. Committing them
 	// would make every teammate's checkout fight over whose task is current —
-	// and would make it show up as an unexplained change in every audit.
+	// and both would show up as unexplained changes in every audit.
 	root := newRepo(t)
 	if _, err := Init(root); err != nil {
 		t.Fatal(err)
@@ -188,8 +188,10 @@ func TestInitGitignoresTheActiveTaskPointer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no .vector/.gitignore was written: %v", err)
 	}
-	if strings.TrimSpace(string(data)) != "current" {
-		t.Errorf("contents = %q, want only the pointer ignored", string(data))
+	for _, want := range localState {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("contents = %q, want %q ignored", string(data), want)
+		}
 	}
 }
 
@@ -208,5 +210,10 @@ func TestInitDoesNotClobberAnExistingVectorGitignore(t *testing.T) {
 	data, _ := os.ReadFile(p)
 	if !strings.Contains(string(data), "scratch/") {
 		t.Error("a customized .vector/.gitignore was overwritten")
+	}
+	// A repository set up before an entry existed must still get it, which is
+	// why init merges rather than only writing the file when absent.
+	if !strings.Contains(string(data), "nudged") {
+		t.Error("a missing entry was not added to an existing .vector/.gitignore")
 	}
 }

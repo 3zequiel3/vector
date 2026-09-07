@@ -49,15 +49,8 @@ func Init(root string) (Result, error) {
 	if err := os.MkdirAll(filepath.Join(root, ".vector", "scope"), 0o755); err != nil {
 		return Result{}, err
 	}
-	// The policy, the scopes and the observations belong to the repository and
-	// travel with it. The active-task pointer does not: it is per-developer
-	// working state, like .git/HEAD, and committing it would make every
-	// teammate's checkout fight over whose task is current.
-	ignore := filepath.Join(root, ".vector", ".gitignore")
-	if _, err := os.Stat(ignore); os.IsNotExist(err) {
-		if err := writeAtomic(ignore, "current\n"); err != nil {
-			return Result{}, err
-		}
+	if err := ensureIgnored(root, localState); err != nil {
+		return Result{}, err
 	}
 	if err := writeAtomic(policyPath, render(stack, cmds, pol)); err != nil {
 		return Result{}, err
@@ -70,6 +63,52 @@ func Init(root string) (Result, error) {
 		Commands:   cmds,
 		Policy:     pol,
 	}, nil
+}
+
+// localState names the files under .vector/ that are per-developer working
+// state rather than repository artifacts.
+//
+// The policy, the scopes and the observations belong to the repository and
+// travel with it. These do not: committing the active-task pointer would make
+// every teammate's checkout fight over whose task is current, and both would
+// surface in every audit as unexplained changes.
+var localState = []string{"current", "nudged"}
+
+// ensureIgnored adds any missing entries to .vector/.gitignore without
+// disturbing what is already there.
+//
+// This lives in init rather than in the hook on purpose: the hook runs once per
+// tool call, and a hot path that quietly edits a user-owned file is a surprise
+// nobody asked for. Init is where a repository is set up, so init is where the
+// setup happens — including for repositories configured before an entry existed.
+func ensureIgnored(root string, entries []string) error {
+	path := filepath.Join(root, ".vector", ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	present := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		present[strings.TrimSpace(line)] = true
+	}
+
+	out := string(data)
+	added := false
+	for _, e := range entries {
+		if present[e] {
+			continue
+		}
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		out += e + "\n"
+		added = true
+	}
+	if !added {
+		return nil
+	}
+	return writeAtomic(path, out)
 }
 
 func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
