@@ -52,14 +52,17 @@ type Finding struct {
 
 // Report is the full machine-readable result of an audit.
 type Report struct {
-	Schema      string    `json:"schema"`
-	Status      Status    `json:"status"`
-	TaskID      string    `json:"task_id,omitempty"`
-	Objective   string    `json:"objective,omitempty"`
-	Enforcement string    `json:"enforcement"`
-	Base        string    `json:"base,omitempty"`
-	Expansions  int       `json:"expansions"`
-	Changed     []string  `json:"changed_files"`
+	Schema      string   `json:"schema"`
+	Status      Status   `json:"status"`
+	TaskID      string   `json:"task_id,omitempty"`
+	Objective   string   `json:"objective,omitempty"`
+	Enforcement string   `json:"enforcement"`
+	Base        string   `json:"base,omitempty"`
+	Expansions  int      `json:"expansions"`
+	Changed     []string `json:"changed_files"`
+	// Bookkeeping is what vector wrote for itself. Reported so the count is
+	// never silently wrong, but never a finding: it is not the change.
+	Bookkeeping []string  `json:"bookkeeping,omitempty"`
 	InScope     []string  `json:"in_scope"`
 	Findings    []Finding `json:"findings"`
 }
@@ -73,6 +76,10 @@ func (r Report) count(kind string) int {
 	}
 	return n
 }
+
+// reviewed is the number of changed files that are actually under review:
+// everything except what vector wrote for itself.
+func (r Report) reviewed() int { return len(r.Changed) - len(r.Bookkeeping) }
 
 // ExitCode maps a report to a process exit code.
 func (r Report) ExitCode() int {
@@ -133,6 +140,10 @@ func Run(opts Options) (Report, error) {
 
 	var sawForbidden, sawOutOfScope bool
 	for _, f := range changed {
+		if rel, err := scope.Normalize(root, f); err == nil && scope.IsBookkeeping(rel) {
+			rep.Bookkeeping = append(rep.Bookkeeping, rel)
+			continue
+		}
 		// A path is judged by everything it reaches, not by how it is spelled:
 		// a symlink resting inside the scope can point at a path the rules deny.
 		targets, err := scope.Targets(root, f)
@@ -166,7 +177,8 @@ func Run(opts Options) (Report, error) {
 		rep.Status = Forbidden
 	case sawOutOfScope:
 		rep.Status = OutOfScope
-	case len(changed) == 0:
+	case len(changed) == len(rep.Bookkeeping):
+		// Only vector's own files moved, which is not a change to review.
 		rep.Status = NoChanges
 	case !rules.Declared:
 		rep.Status = NoScopeDeclared
@@ -192,13 +204,13 @@ func (r Report) WriteText(w io.Writer) error {
 	case NoChanges:
 		b.WriteString("no changes in the working tree\n")
 	case NoScopeDeclared:
-		fmt.Fprintf(&b, "NO SCOPE DECLARED — %d file(s) changed\n", len(r.Changed))
+		fmt.Fprintf(&b, "NO SCOPE DECLARED — %d file(s) changed\n", r.reviewed())
 		b.WriteString("  only forbidden paths were checked; scope conformance was not evaluated\n")
 	case InScope:
 		fmt.Fprintf(&b, "IN SCOPE — %d file(s), all within what was declared\n", len(r.InScope))
 	case OutOfScope:
 		fmt.Fprintf(&b, "OUT OF SCOPE — %d of %d file(s) were not declared\n",
-			r.count("out_of_scope"), len(r.Changed))
+			r.count("out_of_scope"), r.reviewed())
 	case Forbidden:
 		// Forbidden outranks out-of-scope, but it must not hide it: a run that
 		// touched both needs to report both, or the milder finding is lost.
@@ -206,7 +218,7 @@ func (r Report) WriteText(w io.Writer) error {
 		if n := r.count("out_of_scope"); n > 0 {
 			fmt.Fprintf(&b, " and %d out of scope", n)
 		}
-		fmt.Fprintf(&b, ", across %d changed file(s)\n", len(r.Changed))
+		fmt.Fprintf(&b, ", across %d changed file(s)\n", r.reviewed())
 	}
 
 	if r.Objective != "" {
@@ -224,7 +236,7 @@ func (r Report) WriteText(w io.Writer) error {
 	}
 	for _, f := range r.Findings {
 		if f.Pattern != "" {
-			fmt.Fprintf(&b, "  %-14s %s  (regla: %s)\n", f.Kind, f.Path, f.Pattern)
+			fmt.Fprintf(&b, "  %-14s %s  (rule: %s)\n", f.Kind, f.Path, f.Pattern)
 		} else {
 			fmt.Fprintf(&b, "  %-14s %s\n", f.Kind, f.Path)
 		}

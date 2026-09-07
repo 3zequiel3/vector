@@ -383,3 +383,38 @@ func resolveExisting(abs string) (string, error) {
 	}
 	return "", os.ErrNotExist
 }
+
+// bookkeeping names the files vector writes while doing its job.
+//
+// A scope file appears the moment a task declares its boundary, and an
+// observation appears the moment the agent is told to record rather than act.
+// Both are vector operating, not the change under review — and because
+// .vector/** is forbidden so the agent cannot edit its own constraints, every
+// task was opening with a FORBIDDEN verdict about vector's own footprint. A
+// tool whose first answer on every task is a false alarm teaches people to
+// ignore its answers.
+//
+// policy.toml is deliberately absent from this list. It is the enforcement
+// contract, and a change to it is exactly the thing worth reporting.
+var bookkeeping = []string{
+	".vector/scope/**",
+	".vector/observations.md",
+	".vector/.gitignore",
+	// Per-developer working state. init gitignores these, so normally they
+	// never reach a diff at all — but a repository set up before an entry
+	// existed still has them untracked, and reporting vector's own scratch
+	// files as violations of someone's change would be the same false alarm
+	// by a different route.
+	".vector/current",
+	".vector/nudged",
+	".vector/attempts",
+	".vector/verdicts",
+}
+
+// IsBookkeeping reports whether a repo-relative path is one vector writes for
+// itself. The hook still denies the agent writing any of them; this only keeps
+// vector's own footprint out of a report about someone else's change.
+func IsBookkeeping(rel string) bool {
+	_, ok := matchAny(bookkeeping, rel)
+	return ok
+}
