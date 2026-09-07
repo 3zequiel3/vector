@@ -9,7 +9,7 @@ vector notices, tells you, and — where it can — stops it first.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-162-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-164-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -133,6 +133,36 @@ vector doctor     # is vector actually doing anything on this machine?
 verified, never that things are "fine".
 
 </details>
+
+---
+
+### Who types what
+
+This is the part worth being precise about, because vector's whole claim is that
+you are not the one running it.
+
+| | who | when |
+| --- | --- | --- |
+| `vector init` | **you** | once per repository |
+| `vector scope new` | the agent | its first write, because the hook stops it and asks |
+| `vector scope expand` | the agent | when the hook reports a write outside the boundary |
+| `vector observe` | the agent | when the hook tells it to record rather than act |
+| the scope audit | the `Stop` hook | every turn, automatically |
+| staleness and retry signals | the `Stop` hook | every turn, automatically |
+| **`vector verify`** | **you** | **never automatic — see below** |
+
+Everything the agent runs is triggered by a hook denying or reporting something,
+so it happens whether or not the agent was in the mood.
+
+`verify` is the one exception, and it is deliberate: running a project's test
+suite at the end of every turn would cost more than the drift it prevents. So
+when a change is in scope and nothing has verified it, the `Stop` hook says
+exactly that rather than letting silence read as an answer:
+
+```
+vector: date-filter is in scope, and nothing has checked whether it works.
+Run `vector verify` for a verdict; until then the change is UNVERIFIED.
+```
 
 ---
 
@@ -376,7 +406,7 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 162 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 164 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
@@ -396,7 +426,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 162 tests
+go test ./...        # 164 tests
 go vet ./...
 gofmt -l .
 ```

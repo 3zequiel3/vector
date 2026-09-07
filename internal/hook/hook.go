@@ -380,6 +380,20 @@ func stop(root string) *hookOutput {
 	if m := attempt.Judge(root, task).Message(); m != "" {
 		parts = append(parts, m)
 	}
+	// When vector has nothing to complain about, it says what it has not
+	// checked. The scope half of a verdict is automatic; the evidence half
+	// never is, because running a project's test suite at the end of every turn
+	// would cost more than the drift it prevents. That trade is defensible only
+	// if the gap is visible — silence about "does it work" reads as an answer,
+	// and it is not one.
+	//
+	// It fires only when the rest of the hook is quiet, so it is the one line a
+	// reader gets rather than a fourth appended to three louder ones.
+	if len(parts) == 0 {
+		if m := unverifiedMessage(root, task, rep, audited); m != "" {
+			parts = append(parts, m)
+		}
+	}
 	if len(parts) == 0 {
 		return nil
 	}
@@ -415,6 +429,23 @@ func scopeMessage(rep audit.Report, audited bool) string {
 	}
 	b.WriteString(" Run `vector audit` for the full report.")
 	return b.String()
+}
+
+// unverifiedMessage names the half of the verdict nobody asked for.
+//
+// It stays quiet when there is nothing to verify, when no boundary was declared
+// — NO_SCOPE_DECLARED is already its own admission — and when a verdict for
+// this tree already exists, since staleMessage owns that case.
+func unverifiedMessage(root, task string, rep audit.Report, audited bool) string {
+	if !audited || task == "" || rep.Status != audit.InScope {
+		return ""
+	}
+	if _, ok := freshness.Last(root, task); ok {
+		return ""
+	}
+	return fmt.Sprintf(
+		"vector: %s is in scope, and nothing has checked whether it works. "+
+			"Run `vector verify` for a verdict; until then the change is UNVERIFIED.", task)
 }
 
 // staleMessage reports a verdict that has been edited out from under it.

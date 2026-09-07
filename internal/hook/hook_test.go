@@ -711,3 +711,41 @@ func TestStopSaysNothingAboutStalenessWithNoRecordedVerdict(t *testing.T) {
 		t.Errorf("context = %q, want no staleness without a recorded verdict", got.AdditionalContext)
 	}
 }
+
+func TestStopNamesTheHalfNobodyChecked(t *testing.T) {
+	// The scope half of a verdict is automatic; the evidence half never is,
+	// because running a project's suite at the end of every turn would cost more
+	// than the drift it prevents. That trade only holds if the gap is visible —
+	// silence about "does it work" reads as an answer, and it is not one.
+	root, write := newRepoWithoutScope(t)
+	commitAll(t, root) // the policy is baseline; only the task moves the tree now
+	write(".vector/scope/task.toml", "objective = \"a thing\"\nwrite = [\"src/**\"]\n")
+	write(".vector/current", "task\n")
+	write("src/a.go", "package src\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if !strings.Contains(got.AdditionalContext, "vector verify") {
+		t.Errorf("context = %q, want it to name the unrun half", got.AdditionalContext)
+	}
+	if !strings.Contains(got.AdditionalContext, "UNVERIFIED") {
+		t.Errorf("context = %q, want the vocabulary's word for unknown", got.AdditionalContext)
+	}
+	// It must never look like a failure: nothing is blocked and no decision is
+	// returned.
+	if got.PermissionDecision != "" {
+		t.Errorf("decision = %q, want none", got.PermissionDecision)
+	}
+}
+
+func TestStopSaysNothingWhenThereIsNoBoundaryToVerifyAgainst(t *testing.T) {
+	// NO_SCOPE_DECLARED is already its own admission. Adding "and nobody checked
+	// whether it works" on top would be two lines saying one thing.
+	root, write := newRepoWithoutScope(t)
+	commitAll(t, root)
+	write("src/a.go", "package src\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if strings.Contains(got.AdditionalContext, "vector verify") {
+		t.Errorf("context = %q, want silence with no scope declared", got.AdditionalContext)
+	}
+}
