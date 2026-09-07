@@ -2,7 +2,10 @@
 
 # vector
 
-**The scope boundary for AI coding agents.** A deterministic control layer that compiles a declared scope into a hard denial, audits what actually changed with a set operation that cannot fail, and gets out of the way.
+**Keeps an AI coding agent inside the task you asked for.**
+
+You ask for a date filter. The agent also refactors your auth middleware.
+vector notices, tells you, and — where it can — stops it first.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
@@ -16,28 +19,126 @@
 
 ---
 
-## What it is
+## What it does
 
-An AI coding agent asked to add a dashboard filter will sometimes also refactor your auth middleware. vector makes that visible, and — once the hook lands — stops it before it reaches disk.
+You ask your agent for one thing. Somewhere along the way it also touches three
+files nobody mentioned. Sometimes that is necessary and sometimes it is drift,
+and today nothing tells you which happened until you read the diff yourself.
 
-```
-you                          your agent                      vector
-├── "add a date filter"  ──►  Claude Code       ──────────►  ┌──────────────┐
-│                             Codex · Cursor                 │    SCOPE     │  declared paths
-│                             Gemini · OpenCode               │   EVIDENCE   │  git diff
-└── vector audit         ◄──  (unmodified)      ◄──────────  │   VERDICT    │  exit 0 / 1
-                                                             └──────────────┘
-```
+vector watches the boundary of a task and answers two questions:
 
-Three primitives, no more. **Scope** is a set of writable paths. **Evidence** is what git says actually happened. **Verdict** is the set difference between them.
+- **Did this change stay where it was supposed to?**
+- **Does it actually work?**
 
-vector never runs your agent, never holds context, never routes skills, and never remembers anything. It answers one question: *did the change stay inside the boundary declared for it?*
+It never runs your agent, never holds context, never talks to a model. Every
+answer is a comparison it can show you.
 
 ---
 
-## The problem
+## Install
 
-This is measured, not anecdotal. [OverEager-Bench](https://arxiv.org/abs/2605.18583) ran 500 scenarios across ~7,500 executions:
+```bash
+curl -fsSL https://raw.githubusercontent.com/3zequiel3/vector/main/install.sh | sh
+```
+
+No Go toolchain needed — this downloads a checksummed binary and refuses to
+install one it cannot verify. If the install directory is not on your `PATH`,
+the script prints the exact line to add and which file to add it to.
+
+> **Not yet.** No release has been tagged, so this command has nothing to
+> download. Until the first tag lands, use `go install` below.
+
+<details>
+<summary>Other ways to install</summary>
+
+```bash
+go install github.com/3zequiel3/vector/cmd/vector@latest   # needs Go 1.27+
+```
+
+Building from source: `git clone`, then `go build ./cmd/vector`.
+
+`go install` puts the binary in `~/go/bin`, which is often not on `PATH`. The
+curl installer exists partly to avoid that.
+
+</details>
+
+Then, once per repository:
+
+```bash
+cd your-project
+vector init
+```
+
+That is the whole setup. **Keep running `claude` exactly as you always have.**
+
+<details>
+<summary>What <code>vector init</code> actually does to your repo</summary>
+
+- Detects your stack — package manager, runtime, frameworks, and the project's
+  own test/build/lint commands — and writes them to `.vector/policy.toml`
+- Registers three hooks in `.claude/settings.json`, **merging** into whatever is
+  already there rather than replacing it
+- Nothing else. `vector uninstall` removes exactly those entries.
+
+Add `-sandbox` to also let the OS deny writes to forbidden paths, and `-no-hooks`
+to skip the hook registration entirely.
+
+</details>
+
+---
+
+## What happens then
+
+Nothing you have to do. Here is the whole loop.
+
+**1. You work normally.**
+
+```console
+$ claude
+> add a date filter to the dashboard
+```
+
+**2. The agent declares what it is about to touch** — not you. It does this
+after exploring and before its first edit, which is the only moment anyone
+knows the answer. vector stops that first write and asks:
+
+```
+vector: no scope is declared, and this writes src/dashboard/Filter.tsx.
+Declare the boundary before writing, covering every file this task needs:
+  vector scope new <short-id> -o "<objective>" -w "<pattern>"
+```
+
+**3. Writes inside the boundary are silent.** Writes outside it are reported:
+
+```
+vector: src/middleware/auth.ts is outside the declared scope. Continuing
+(advisory mode). If this belongs to the task, run `vector scope expand ...`;
+if it does not, leave it and record it with `vector observe "<note>"`.
+```
+
+**4. When the turn ends, you get the summary** without asking for it.
+
+That is it. You typed `vector init` once and then a sentence to your agent.
+
+<details>
+<summary>Running it by hand</summary>
+
+```bash
+vector audit      # did the change stay in scope?
+vector verify     # ...and does it work? runs your project's own test/build/lint
+vector doctor     # is vector actually doing anything on this machine?
+```
+
+`vector doctor` is the one to run when something feels off. It reports what it
+verified, never that things are "fine".
+
+</details>
+
+---
+
+## Why it exists
+
+This is not a hunch. It is measured. [OverEager-Bench](https://arxiv.org/abs/2605.18583) ran 500 scenarios across ~7,500 executions:
 
 | Setup | Out-of-scope action rate |
 | --- | --- |
@@ -66,25 +167,6 @@ There are **zero model calls** anywhere in vector. Every decision is a set opera
 
 ---
 
-## Install
-
-```bash
-go install github.com/3zequiel3/vector/cmd/vector@latest
-```
-
-Then, once per repository:
-
-```bash
-cd your-project
-vector init
-```
-
-`init` detects the stack, writes `.vector/policy.toml`, and registers its hooks in `.claude/settings.json` — merging into whatever is already there, never replacing it. `vector uninstall` removes exactly those entries and leaves the rest alone.
-
-**That is the whole setup.** Keep running `claude` the way you always have. You never declare a scope, never pass a task id, never remember to audit. Use `--no-hooks` if you would rather wire it yourself.
-
----
-
 ## Commands
 
 ```
@@ -101,84 +183,6 @@ vector scope list                 list declared scopes
 vector observe "<note>"           record something noticed, without acting on it
 vector observe list               list recorded observations
 ```
-
-### A session
-
-You type two words. Everything else is the hooks.
-
-```console
-$ claude
-> add a date filter to the dashboard
-```
-
-`SessionStart` hands the agent the project's real commands and one instruction: declare your boundary once you know it.
-
-```
-vector is active in this repository.
-Package manager: pnpm. Verification — test: pnpm run test; build: pnpm run build.
-No scope is declared. Once you know which files this task needs — after
-exploring, before your first edit — declare it:
-  vector scope new <short-id> -o "<objective>" -w "<path pattern>"
-```
-
-**The agent declares the scope, not you.** That ordering is the point: after exploring it knows which files the task needs, and before exploring nobody does. Asking a person to predict paths up front is asking them to do the work they opened the agent for.
-
-Then `PreToolUse` decides every write. In scope, it says nothing:
-
-```console
-$ # Write src/dashboard/Filter.tsx  →  (silence)
-```
-
-Out of scope, it reports and offers both honest ways out:
-
-```
-vector: src/middleware/auth.ts is outside the declared scope. Continuing
-(advisory mode). If this belongs to the task, run `vector scope expand
-date-filter -w "<pattern>" -reason blocking -evidence "<what proves it>"`;
-if it does not, leave it and record it with `vector observe "<note>"`.
-```
-
-And a forbidden path is denied outright, including through the shell — the shape that slips past a hook watching only `Edit` and `Write`:
-
-```console
-$ # Bash: cat > .env << EOF
-vector: .env is forbidden by .env
-```
-
-`Stop` runs the audit as the turn ends, so you see the result without asking.
-
----
-
-## Version intelligence
-
-`vector init` never assumes a stack, and it keeps four kinds of truth apart, because collapsing them into one "version" is how a tool ends up confidently wrong:
-
-| | source | authority |
-| --- | --- | --- |
-| **declared** | manifest, `engines`, `packageManager`, `.nvmrc` | intent — not truth |
-| **resolved** | the lockfile's identity picks the package manager | what would be installed |
-| **installed** | `node_modules/`, `.venv`, `--version` | **what actually runs** |
-| **upstream** | the registry | deliberately not collected |
-
-```console
-$ vector init
-package manager        pnpm  (lockfile: pnpm-lock.yaml)
-  installed            11.8.0
-runtime declared       24.x
-runtime installed      24.17.0
-
-frameworks            declared         installed
-  next                 16.2.12          16.2.12
-  react                19.2.4           19.2.4
-  tailwindcss          ^4               4.3.3
-
-test                   pnpm run test
-typecheck              pnpm run typecheck
-```
-
-Package-manager detection walks upward from the working directory to the repository root — never past it — applying the same ordered strategies at each level: lockfile, then `packageManager`, then `devEngines`, then install metadata. Verification commands are read from the project's own manifests. vector invokes them; it never invents them.
-
-A range like `^4` against an installed `4.3.3` is **not** reported as a disagreement. vector only claims a mismatch it can prove without a semver solver: an exact pin that differs.
 
 ---
 
@@ -221,38 +225,6 @@ OBS-001 recorded (architecture/medium) — action: defer
 ```
 
 `action: defer` is not a parameter. Recording is the whole of the permitted response.
-
----
-
-## Enforcement tiers
-
-vector is honest about which tier it actually reaches, and `vector doctor` reports it:
-
-| tier | mechanism | guarantee |
-| --- | --- | --- |
-| **T3** confinement | OS sandbox — **what `vector init -sandbox` configures** | absolute — survives a bypassed hook, and covers writes vector cannot see |
-| **T5** interception | native `PreToolUse` hook — **what `vector init` registers** | high, with [~5 % documented leaks](https://github.com/anthropics/claude-code/issues/45427) |
-| **T2** observation | `git diff` against the boundary | **detection is total, prevention is none** |
-| **T1** advice | `AGENTS.md`, `CLAUDE.md` | none |
-
-Counter-intuitively, **T2 is more reliable than T5**: a hook has measured leaks — subagents, Bash heredocs, silent failures — while a set operation over git cannot fail. It does not prevent, but it never lies.
-
-```console
-$ vector doctor
-REPOSITORY
-  ok   self-protection    vector's own config is outside the writable scope
-SCOPES
-  warn date-filter        patterns matching no file in the repo: src/dashbaord/**
-                          → usually a typo; check the path
-ENFORCEMENT
-  warn Claude Code        installed, no vector hook registered
-       tier               T2 observation — detects 100 % after the fact,
-                          but prevents nothing
-
-0 failure(s), 2 warning(s) — enforcement at T2
-```
-
-Nothing in vector ever reports "safe". The strongest statement it makes is which tier was actually reached.
 
 ---
 
@@ -303,6 +275,73 @@ does not explain. A passing run ends the streak. Nothing is ever blocked on this
 work on a heuristic gets uninstalled.
 
 `verify` is never run by a hook. Running a test suite at the end of every turn would cost more than the waste it prevents; `Stop` runs the cheap scope audit and leaves the expensive question to you or to CI.
+
+---
+
+## Version intelligence
+
+`vector init` never assumes a stack, and it keeps four kinds of truth apart, because collapsing them into one "version" is how a tool ends up confidently wrong:
+
+| | source | authority |
+| --- | --- | --- |
+| **declared** | manifest, `engines`, `packageManager`, `.nvmrc` | intent — not truth |
+| **resolved** | the lockfile's identity picks the package manager | what would be installed |
+| **installed** | `node_modules/`, `.venv`, `--version` | **what actually runs** |
+| **upstream** | the registry | deliberately not collected |
+
+```console
+$ vector init
+package manager        pnpm  (lockfile: pnpm-lock.yaml)
+  installed            11.8.0
+runtime declared       24.x
+runtime installed      24.17.0
+
+frameworks            declared         installed
+  next                 16.2.12          16.2.12
+  react                19.2.4           19.2.4
+  tailwindcss          ^4               4.3.3
+
+test                   pnpm run test
+typecheck              pnpm run typecheck
+```
+
+Package-manager detection walks upward from the working directory to the repository root — never past it — applying the same ordered strategies at each level: lockfile, then `packageManager`, then `devEngines`, then install metadata. Verification commands are read from the project's own manifests. vector invokes them; it never invents them.
+
+A range like `^4` against an installed `4.3.3` is **not** reported as a disagreement. vector only claims a mismatch it can prove without a semver solver: an exact pin that differs.
+
+---
+
+## Enforcement tiers
+
+vector is honest about which tier it actually reaches, and `vector doctor` reports it:
+
+| tier | mechanism | guarantee |
+| --- | --- | --- |
+| **T3** confinement | OS sandbox — **what `vector init -sandbox` configures** | absolute — survives a bypassed hook, and covers writes vector cannot see |
+| **T5** interception | native `PreToolUse` hook — **what `vector init` registers** | high, with [~5 % documented leaks](https://github.com/anthropics/claude-code/issues/45427) |
+| **T2** observation | `git diff` against the boundary | **detection is total, prevention is none** |
+| **T1** advice | `AGENTS.md`, `CLAUDE.md` | none |
+
+Counter-intuitively, **T2 is more reliable than T5**: a hook has measured leaks — subagents, Bash heredocs, silent failures — while a set operation over git cannot fail. It does not prevent, but it never lies.
+
+```console
+$ vector doctor
+REPOSITORY
+  ok   self-protection    vector's own config is outside the writable scope
+SCOPES
+  warn date-filter        patterns matching no file in the repo: src/dashbaord/**
+                          → usually a typo; check the path
+ENFORCEMENT
+  warn Claude Code        installed, no vector hook registered
+       tier               T2 observation — detects 100 % after the fact,
+                          but prevents nothing
+
+0 failure(s), 2 warning(s) — enforcement at T2
+```
+
+Nothing in vector ever reports "safe". The strongest statement it makes is which tier was actually reached.
+
+---
 
 ## Exit codes
 
