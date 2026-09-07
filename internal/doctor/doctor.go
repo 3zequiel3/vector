@@ -562,9 +562,12 @@ var integrations = []integration{
 		name:     "engram",
 		evidence: engramEvidence,
 		looked:   "no ~/.engram/engram.db",
-		unlocks:  "nothing vector can reach",
-		use:      unreadable,
-		caveat:   "no CLI and no documented external read path, so vector neither reads it nor should",
+		// No unlocks line: there is nothing to unlock, and printing a "would
+		// unlock: nothing" row is noise dressed as information. The caveat
+		// already says why.
+		unlocks: "",
+		use:     unreadable,
+		caveat:  "no CLI and no documented external read path, so vector neither reads it nor should",
 	},
 }
 
@@ -584,12 +587,24 @@ func checkIntegrations(b *builder, root string) {
 	b.add("integrations", "git", OK,
 		"the only hard requirement — it resolved this repository's root", "")
 
+	// Present integrations get a line each, because what they unlock is now
+	// something the reader can act on. Absent ones are named together on one
+	// line and nothing more.
+	//
+	// The reason is that most readers have none of these. Printing two lines
+	// per absent tool turns a clean diagnostic into a list of five things the
+	// reader appears to be missing — and four of them are projects they have
+	// never heard of. A diagnostic reports the machine it is run on; discovery
+	// belongs in docs/reference.md, which is where the full table lives.
+	var absent []string
 	for _, in := range integrations {
 		ev := in.evidence(root)
 		if ev == "" {
-			b.addIntegration(in.name,
-				in.looked+" — optional; vector works without it",
-				in.unlocks, in.use, false)
+			// Something that unlocks nothing even when installed has no place
+			// in a list of things worth installing.
+			if in.use != unreadable {
+				absent = append(absent, in.name)
+			}
 			continue
 		}
 		detail := ev + " — " + in.use.presentSuffix()
@@ -597,6 +612,12 @@ func checkIntegrations(b *builder, root string) {
 			detail += ": " + in.caveat
 		}
 		b.addIntegration(in.name, detail, in.unlocks, in.use, true)
+	}
+
+	if len(absent) > 0 {
+		b.add("integrations", "optional", Info,
+			"not installed: "+strings.Join(absent, ", "),
+			"none is required; docs/reference.md says what each would add")
 	}
 }
 

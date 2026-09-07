@@ -208,10 +208,11 @@ func integrationCheck(t *testing.T, r Report, name string) Check {
 	return find(t, r, "integrations", name)
 }
 
-func TestEveryIntegrationIsReportedAbsentWithoutFailing(t *testing.T) {
-	// Absent optional software is a fact, not a finding. If any of these came
-	// back warn or fail, doctor would read as a list of unmet dependencies for
-	// a tool whose only dependency is git.
+func TestAbsentIntegrationsCollapseToOneLine(t *testing.T) {
+	// Most readers have none of these. A line each — plus a line each for what
+	// they would unlock — turns a clean diagnostic into a list of five things
+	// the reader appears to be missing, four of them projects they have never
+	// heard of. Absence is a fact, not a finding, and it gets one line.
 	isolate(t)
 	root := newRepo(t)
 
@@ -219,23 +220,46 @@ func TestEveryIntegrationIsReportedAbsentWithoutFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	for _, name := range []string{"gentle-ai", "openspec", "chronicle", "atlas", "engram"} {
-		c := integrationCheck(t, rep, name)
-		if c.Level != "info" {
-			t.Errorf("%s: level = %q, want info — absence is not a warning", name, c.Level)
+		for _, c := range rep.Checks {
+			if c.Group == "integrations" && c.Name == name {
+				t.Errorf("%s got its own line while absent: %q", name, c.Detail)
+			}
 		}
-		if c.Present {
-			t.Errorf("%s: present = true on an isolated machine (%s)", name, c.Detail)
+	}
+
+	c := integrationCheck(t, rep, "optional")
+	if c.Level != "info" {
+		t.Errorf("level = %q, want info — absence is not a warning", c.Level)
+	}
+	for _, name := range []string{"gentle-ai", "openspec", "chronicle", "atlas"} {
+		if !strings.Contains(c.Detail, name) {
+			t.Errorf("detail = %q, want it to name %s", c.Detail, name)
 		}
-		if !strings.Contains(c.Detail, "optional") {
-			t.Errorf("%s: detail = %q, want it to say the piece is optional", name, c.Detail)
-		}
-		if c.Unlocks == "" {
-			t.Errorf("%s: no unlocks — absence is only meaningful next to what it costs", name)
-		}
+	}
+	// engram unlocks nothing even when installed, so it has no place in a list
+	// of things worth installing.
+	if strings.Contains(c.Detail, "engram") {
+		t.Errorf("detail = %q, want engram left out — it unlocks nothing", c.Detail)
+	}
+	if !strings.Contains(c.Hint, "reference.md") {
+		t.Errorf("hint = %q, want it to point at where the full table lives", c.Hint)
 	}
 	if rep.ExitCode() != 0 {
 		t.Errorf("ExitCode = %d, want 0: no optional piece may fail the run", rep.ExitCode())
+	}
+}
+
+func TestGitIsNamedAsTheOnlyRequirement(t *testing.T) {
+	isolate(t)
+	rep, err := Run(newRepo(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := integrationCheck(t, rep, "git")
+	if !strings.Contains(c.Detail, "only hard requirement") {
+		t.Errorf("detail = %q, want git named as the sole requirement", c.Detail)
 	}
 }
 
