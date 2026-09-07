@@ -49,6 +49,16 @@ func Init(root string) (Result, error) {
 	if err := os.MkdirAll(filepath.Join(root, ".vector", "scope"), 0o755); err != nil {
 		return Result{}, err
 	}
+	// The policy, the scopes and the observations belong to the repository and
+	// travel with it. The active-task pointer does not: it is per-developer
+	// working state, like .git/HEAD, and committing it would make every
+	// teammate's checkout fight over whose task is current.
+	ignore := filepath.Join(root, ".vector", ".gitignore")
+	if _, err := os.Stat(ignore); os.IsNotExist(err) {
+		if err := writeAtomic(ignore, "current\n"); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := writeAtomic(policyPath, render(stack, cmds, pol)); err != nil {
 		return Result{}, err
 	}

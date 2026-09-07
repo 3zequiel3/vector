@@ -175,3 +175,38 @@ func TestCurrentIgnoresAPointerToADeletedScope(t *testing.T) {
 		t.Errorf("Current = %q, want empty when the scope file is gone", got)
 	}
 }
+
+func TestInitGitignoresTheActiveTaskPointer(t *testing.T) {
+	// The pointer is per-developer working state, like .git/HEAD. Committing it
+	// would make every teammate's checkout fight over whose task is current —
+	// and would make it show up as an unexplained change in every audit.
+	root := newRepo(t)
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".vector", ".gitignore"))
+	if err != nil {
+		t.Fatalf("no .vector/.gitignore was written: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "current" {
+		t.Errorf("contents = %q, want only the pointer ignored", string(data))
+	}
+}
+
+func TestInitDoesNotClobberAnExistingVectorGitignore(t *testing.T) {
+	root := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, ".vector"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(root, ".vector", ".gitignore")
+	if err := os.WriteFile(p, []byte("current\nscratch/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.Contains(string(data), "scratch/") {
+		t.Error("a customized .vector/.gitignore was overwritten")
+	}
+}

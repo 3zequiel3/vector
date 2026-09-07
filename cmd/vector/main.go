@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
@@ -20,6 +21,7 @@ import (
 	"github.com/3zequiel3/vector/internal/observe"
 	"github.com/3zequiel3/vector/internal/scope"
 	"github.com/3zequiel3/vector/internal/setup"
+	"github.com/3zequiel3/vector/internal/verify"
 )
 
 const usage = `vector — scope boundary for AI coding agents
@@ -32,11 +34,17 @@ Usage:
   vector observe "<note>"           record something noticed, without acting on it
   vector observe list               list recorded observations
   vector audit [-task <id>]         compare the working tree against the boundary
+  vector verify                     run the project's checks and give a verdict
   vector doctor                     check whether vector is actually doing anything
   vector uninstall                  unregister vector's hooks, leaving others intact
 
 init flags:
   -no-hooks      do not register hooks in the detected agent
+
+verify flags:
+  -only <name>   run just this check (repeatable): typecheck, lint, test, build
+  -timeout <d>   per-command timeout (default 10m)
+  -json          emit vector.verify/v1 JSON
 
 audit flags:
   -task <id>     task whose scope to enforce (.vector/scope/<id>.toml)
@@ -83,6 +91,8 @@ func main() {
 		os.Exit(runObserve(os.Args[2:]))
 	case "audit":
 		os.Exit(runAudit(os.Args[2:]))
+	case "verify":
+		os.Exit(runVerify(os.Args[2:]))
 	case "doctor":
 		os.Exit(runDoctor(os.Args[2:]))
 	case "uninstall":
@@ -494,6 +504,38 @@ func runAudit(args []string) int {
 	}
 	if werr != nil {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", werr)
+		return exitUsage
+	}
+	return rep.ExitCode()
+}
+
+func runVerify(args []string) int {
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var only patterns
+	fs.Var(&only, "only", "run just this check (repeatable)")
+	task := fs.String("task", "", "task id whose scope to enforce")
+	dir := fs.String("C", ".", "directory to run in")
+	timeout := fs.Duration("timeout", 10*time.Minute, "per-command timeout")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	rep, err := verify.Run(verify.Options{
+		Dir: *dir, TaskID: *task, Only: only, Timeout: *timeout,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
+		return exitUsage
+	}
+	if *asJSON {
+		err = rep.WriteJSON(os.Stdout)
+	} else {
+		err = rep.WriteText(os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
 		return exitUsage
 	}
 	return rep.ExitCode()

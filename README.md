@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-62-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-72-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -92,6 +92,7 @@ vector init                       detect the stack, write config, register hooks
 vector uninstall                  unregister the hooks, leaving others intact
 vector doctor                     check whether vector is actually doing anything
 vector audit                      compare the working tree against the boundary
+vector verify                     run the project's checks and give a full verdict
 
 # the agent runs these; you rarely will
 vector scope new <id> -w <pat>    declare a task's boundary (and make it active)
@@ -255,6 +256,39 @@ Nothing in vector ever reports "safe". The strongest statement it makes is which
 
 ---
 
+## The verdict
+
+`audit` answers where the change went. `verify` adds whether it works, by running the commands the project already declares — and combines both:
+
+```console
+$ vector verify
+PARTIALLY_VERIFIED — passed: lint, test, build — but no scope was declared,
+                     so conformance was not checked
+
+  ---- typecheck  not declared by the project
+  ok   lint       go vet ./...     (101ms)
+  ok   test       go test ./...    (2.307s)
+  ok   build      go build ./...   (254ms)
+```
+
+Two rules decide the verdict:
+
+**Nothing is `VERIFIED` unless something actually ran.** A repository that declares no test command has not been shown to work, however green the rest is. "Not checked" never becomes "fine".
+
+**Scope outranks evidence.** A change that passes every test but touched files nobody declared is still `OUT_OF_SCOPE`. Passing tests do not retroactively authorize the work.
+
+| verdict | meaning | exit |
+| --- | --- | --- |
+| `VERIFIED` | in scope, and every declared check passed | 0 |
+| `PARTIALLY_VERIFIED` | what ran passed, but something checkable is missing | 0 |
+| `FAILED` | a check returned non-zero | 1 |
+| `OUT_OF_SCOPE` | the change left its boundary — reported even when checks pass | 1 |
+| `UNVERIFIED` | nothing ran | 1 |
+
+Checks run cheapest first — typecheck, lint, test, build — because a type error explains the test failures that follow. Each has a timeout, so a hung suite fails loudly instead of hanging.
+
+`verify` is never run by a hook. Running a test suite at the end of every turn would cost more than the waste it prevents; `Stop` runs the cheap scope audit and leaves the expensive question to you or to CI.
+
 ## Exit codes
 
 | command | 0 | 1 | 2 |
@@ -268,18 +302,18 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 10 commands, 62 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 72 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
-Still open: `vector verify`, the evidence half of a verdict. `policy.toml` already detects `test`, `typecheck`, `build` and `lint`, and nothing runs them — so today `audit` can say "in scope" about a change that does not compile. Until that lands, a verdict covers where the change went, not whether it works.
+Still open: prebuilt releases, so installing does not require a Go toolchain; and the Codex, Cursor and Gemini hook adapters.
 
 ---
 
 ## Development
 
 ```bash
-go test ./...        # 62 tests
+go test ./...        # 72 tests
 go vet ./...
 gofmt -l .
 ```
