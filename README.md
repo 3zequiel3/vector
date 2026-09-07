@@ -431,6 +431,21 @@ go vet ./...
 gofmt -l .
 ```
 
+Those three run on every push, if you enable the hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It rejects the push and says which of the three failed, printing only the part
+that failed. `git push --no-verify` skips it — a check you cannot bypass when you
+know better is a check people stop using.
+
+There is no CI workflow. The checks a pipeline would run happen before the push
+instead, which is faster to act on and does not depend on an account being in
+good standing. The release workflow stays, because building binaries is not
+something a laptop should be trusted to do reproducibly.
+
 Two dependencies: [`BurntSushi/toml`](https://github.com/BurntSushi/toml) and [`bmatcuk/doublestar`](https://github.com/bmatcuk/doublestar) — the latter because the standard library's `filepath.Match` has no `**`.
 
 ---

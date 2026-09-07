@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# Refuse a push that would break main.
+#
+# This exists because CI is not available on this account, so the checks that
+# would run after a push have to run before it instead. It is the same three
+# checks the release depends on, in the order that fails fastest.
+#
+# Enable it once per clone:
+#
+#   git config core.hooksPath .githooks
+#
+# `git push --no-verify` skips it, deliberately: a check you cannot bypass when
+# you know better is a check people stop using.
+
+set -eu
+
+say() { printf '%s\n' "$1" >&2; }
+
+reject() {
+	say ''
+	say "push rejected: $1"
+	say ''
+	say "  fix it, or push anyway with:  git push --no-verify"
+	exit 1
+}
+
+command -v go >/dev/null 2>&1 || reject 'go is not on PATH, so nothing could be checked'
+
+# Formatting first: it is instant, and a formatting diff is the one failure that
+# is never worth a full test run to discover.
+unformatted="$(gofmt -l . 2>/dev/null || true)"
+if [ -n "$unformatted" ]; then
+	say ''
+	say 'these files are not gofmt-clean:'
+	printf '%s\n' "$unformatted" | sed 's/^/  /' >&2
+	# shellcheck disable=SC2016  # the backticks are the message, not a command
+	reject 'run `gofmt -w .`'
+fi
+
+if ! vet_out="$(go vet ./... 2>&1)"; then
+	say ''
+	printf '%s\n' "$vet_out" | sed 's/^/  /' >&2
+	reject 'go vet found problems'
+fi
+
+# Tests last. They are the slow one, and by here the cheap failures are gone.
+if ! test_out="$(go test ./... 2>&1)"; then
+	say ''
+	printf '%s\n' "$test_out" | grep -Ev '^(ok  |\?   )' | sed 's/^/  /' >&2
+	reject 'tests failed'
+fi
+
+say 'gofmt, vet and tests pass'

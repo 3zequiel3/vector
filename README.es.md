@@ -437,6 +437,21 @@ go vet ./...
 gofmt -l .
 ```
 
+Esos tres corren en cada push, si habilitás el hook una vez por clon:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Rechaza el push y te dice cuál de los tres falló, imprimiendo solo la parte que
+falló. `git push --no-verify` lo saltea — un chequeo que no podés evadir cuando
+sabés más que él es un chequeo que la gente deja de usar.
+
+No hay workflow de CI. Los chequeos que correría un pipeline pasan antes del
+push, que es más rápido de accionar y no depende de que una cuenta esté al día.
+El workflow de release se queda, porque compilar binarios no es algo que
+convenga confiarle a una laptop de forma reproducible.
+
 Dos dependencias: [`BurntSushi/toml`](https://github.com/BurntSushi/toml) y [`bmatcuk/doublestar`](https://github.com/bmatcuk/doublestar) — esta última porque el `filepath.Match` de la biblioteca estándar no soporta `**`.
 
 ---
