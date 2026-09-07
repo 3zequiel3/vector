@@ -1,6 +1,10 @@
 package scope
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func ruleset(write, forbidden []string, declared bool) Ruleset {
 	return Ruleset{Write: write, Forbidden: forbidden, Declared: declared}
@@ -124,5 +128,113 @@ func TestDefaultPolicyProtectsItsOwnEnforcement(t *testing.T) {
 		if d, _ := r.Decide(p); d != Forbidden {
 			t.Errorf("Decide(%q) = %v, want Forbidden even under a wide-open scope", p, d)
 		}
+	}
+}
+
+func TestSymlinkCannotLaunderAForbiddenPath(t *testing.T) {
+	// The attack, and the reason Targets exists: create a link inside the
+	// declared scope that points at a denied path, then write to the link. The
+	// link's own path passes every rule; the target is the one that matters.
+	root := t.TempDir()
+	mkdirs(t, root, "src", ".claude")
+	writeFile(t, root, ".claude/settings.json", "{}")
+	if err := os.Symlink(
+		filepath.Join(root, ".claude", "settings.json"),
+		filepath.Join(root, "src", "notes.json"),
+	); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+
+	r := BuildRuleset(DefaultPolicy(), &Scope{Write: []string{"src/**"}})
+	reached, err := Targets(root, "src/notes.json")
+	if err != nil {
+		t.Fatalf("Targets: %v", err)
+	}
+
+	worst := Allowed
+	for _, p := range reached {
+		if d, _ := r.Decide(p); d > worst {
+			worst = d
+		}
+	}
+	if worst != Forbidden {
+		t.Errorf("decision = %v over %v, want Forbidden — the link laundered the target", worst, reached)
+	}
+}
+
+func TestSymlinkedDirectoryIsResolvedForAFileNotYetCreated(t *testing.T) {
+	// The other half of the same attack: link the directory, then write a file
+	// that does not exist yet. EvalSymlinks fails on a missing path, so
+	// resolution has to walk up to the nearest ancestor that does exist.
+	root := t.TempDir()
+	mkdirs(t, root, "src", ".claude/hooks")
+	if err := os.Symlink(
+		filepath.Join(root, ".claude", "hooks"),
+		filepath.Join(root, "src", "vendor"),
+	); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+
+	r := BuildRuleset(DefaultPolicy(), &Scope{Write: []string{"src/**"}})
+	reached, err := Targets(root, "src/vendor/guard.sh")
+	if err != nil {
+		t.Fatalf("Targets: %v", err)
+	}
+	worst := Allowed
+	for _, p := range reached {
+		if d, _ := r.Decide(p); d > worst {
+			worst = d
+		}
+	}
+	if worst != Forbidden {
+		t.Errorf("decision = %v over %v, want Forbidden for a new file under a linked directory", worst, reached)
+	}
+}
+
+func TestSymlinkOutOfTheRepositoryIsAnEscape(t *testing.T) {
+	// A link leaving the repository cannot be judged by repo-relative patterns,
+	// so it is refused rather than silently allowed.
+	root := t.TempDir()
+	outside := t.TempDir()
+	mkdirs(t, root, "src")
+	writeFile(t, outside, "secret", "x")
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(root, "src", "link")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if _, err := Targets(root, "src/link"); err == nil {
+		t.Error("a link out of the repository was accepted as an ordinary path")
+	}
+}
+
+func TestTargetsLeavesOrdinaryPathsAlone(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "src")
+	writeFile(t, root, "src/a.ts", "x")
+	got, err := Targets(root, "src/a.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "src/a.ts" {
+		t.Errorf("Targets = %v, want just the path itself", got)
+	}
+}
+
+func mkdirs(t *testing.T, root string, dirs ...string) {
+	t.Helper()
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

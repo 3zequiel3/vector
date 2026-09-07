@@ -111,12 +111,25 @@ func preTool(root string, e Event) *hookOutput {
 
 	var outOfScope, inRepo []string
 	for _, p := range paths {
-		rel, err := scope.Normalize(root, p)
+		// Judge every path the write reaches, not how it is spelled. A symlink
+		// resting inside the declared scope can point at a denied path, and
+		// checking only the literal path lets the write straight through the
+		// rule that exists to stop it.
+		reached, err := scope.Targets(root, p)
 		if err != nil {
 			continue // outside the repository; not vector's boundary to police
 		}
+		rel := reached[0]
 		inRepo = append(inRepo, rel)
-		switch d, pat := rules.Decide(rel); d {
+
+		// The strictest decision across everything the path reaches wins.
+		d, pat := scope.Allowed, ""
+		for _, t := range reached {
+			if td, tpat := rules.Decide(t); td > d {
+				d, pat, rel = td, tpat, t
+			}
+		}
+		switch d {
 		case scope.Forbidden:
 			// A forbidden path is denied in every mode. These are the rules
 			// that keep enforcement from being edited away, and they are not

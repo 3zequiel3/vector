@@ -323,3 +323,62 @@ func writeFileAtomic(path, content string) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
+
+// Targets returns every repo-relative path a write to p would actually reach:
+// p itself, and — when p or one of its parent directories is a symlink — what
+// it resolves to.
+//
+// Checking only the lexical path is a documented way this class of tool leaks.
+// A matcher that tests the path as written accepts `ln -s .claude/settings.json
+// src/notes.json` followed by a write to src/notes.json: the link sits inside
+// the declared scope, the target does not, and the rule that was supposed to
+// keep enforcement from being edited away never fires. The same works one level
+// up, with a symlinked directory.
+//
+// A link resolving outside the repository is reported as an escape rather than
+// as a path, because no rule written against repo-relative patterns can
+// meaningfully decide it.
+func Targets(root, p string) ([]string, error) {
+	rel, err := Normalize(root, p)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{rel}
+
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	resolved, err := resolveExisting(abs)
+	if err != nil || resolved == abs {
+		// Nothing resolvable, or nothing to resolve. The lexical path stands.
+		return out, nil
+	}
+	target, err := Normalize(root, resolved)
+	if err != nil {
+		// The link leaves the repository. That is an escape, not a second path.
+		return nil, ErrEscapesRoot
+	}
+	if target != rel {
+		out = append(out, target)
+	}
+	return out, nil
+}
+
+// resolveExisting resolves symlinks for a path that may not exist yet. A file
+// about to be created has no link of its own, but the directory holding it may
+// be one, so resolution walks up to the nearest existing ancestor and rebuilds
+// the remainder onto it.
+func resolveExisting(abs string) (string, error) {
+	rest := ""
+	cur := abs
+	for i := 0; i < 64; i++ {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", os.ErrNotExist
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+	return "", os.ErrNotExist
+}

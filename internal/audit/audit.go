@@ -133,22 +133,31 @@ func Run(opts Options) (Report, error) {
 
 	var sawForbidden, sawOutOfScope bool
 	for _, f := range changed {
-		rel, err := scope.Normalize(root, f)
+		// A path is judged by everything it reaches, not by how it is spelled:
+		// a symlink resting inside the scope can point at a path the rules deny.
+		targets, err := scope.Targets(root, f)
 		if err != nil {
 			// A path we cannot place is a path we cannot clear.
 			rep.Findings = append(rep.Findings, Finding{Path: f, Kind: "unresolvable"})
 			sawOutOfScope = true
 			continue
 		}
-		switch d, pat := rules.Decide(rel); d {
+		worst, pattern, reached := scope.Allowed, "", targets[0]
+		for _, t := range targets {
+			d, pat := rules.Decide(t)
+			if d > worst {
+				worst, pattern, reached = d, pat, t
+			}
+		}
+		switch worst {
 		case scope.Forbidden:
-			rep.Findings = append(rep.Findings, Finding{Path: rel, Kind: "forbidden", Pattern: pat})
+			rep.Findings = append(rep.Findings, Finding{Path: reached, Kind: "forbidden", Pattern: pattern})
 			sawForbidden = true
 		case scope.OutOfScope:
-			rep.Findings = append(rep.Findings, Finding{Path: rel, Kind: "out_of_scope"})
+			rep.Findings = append(rep.Findings, Finding{Path: reached, Kind: "out_of_scope"})
 			sawOutOfScope = true
 		default:
-			rep.InScope = append(rep.InScope, rel)
+			rep.InScope = append(rep.InScope, targets[0])
 		}
 	}
 
