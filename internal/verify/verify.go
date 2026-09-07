@@ -124,9 +124,15 @@ func Run(opts Options) (Report, error) {
 	// would quietly extend the claim to cover edits nothing ever checked.
 	verified := freshness.Hash(root, scopeRep.InScope)
 
-	// Commands come from the project's own manifests, never from a guess.
+	// Commands come from the project's own manifests, never from a guess —
+	// and, where the project said detection got it wrong, from policy.toml.
+	//
+	// A policy that will not load is not a reason to refuse to verify: the
+	// zero Policy overrides nothing, so verification falls back to pure
+	// detection rather than failing on a file that is not required to exist.
 	stack := detect.Detect(root)
-	cmds := detect.DetectCommands(root, stack.PM)
+	pol, _ := scope.LoadPolicy(root)
+	cmds := pol.MergeCommands(detect.DetectCommands(root, stack.PM))
 	byName := map[string]string{
 		"test": cmds.Test, "typecheck": cmds.Typecheck,
 		"build": cmds.Build, "lint": cmds.Lint,

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
+	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/scope"
 )
 
@@ -215,5 +218,104 @@ func TestInitDoesNotClobberAnExistingVectorGitignore(t *testing.T) {
 	// why init merges rather than only writing the file when absent.
 	if !strings.Contains(string(data), "nudged") {
 		t.Error("a missing entry was not added to an existing .vector/.gitignore")
+	}
+}
+
+func TestRenderedCommandsAreCommentedOut(t *testing.T) {
+	// This is the guard on the trap that makes [commands] readable at all.
+	//
+	// Policy now overrides detection. If init wrote the detected command as
+	// live TOML, that value would become an override the instant it was
+	// written, freezing the project at whatever its manifests said the day
+	// init ran — with nothing on screen to say so. Detection belongs in this
+	// file as a comment: visible, and inert until a human acts on it.
+	out := render(
+		detect.Stack{},
+		detect.Commands{Test: "go test ./...", Lint: "go vet ./..."},
+		scope.DefaultPolicy(),
+	)
+
+	if !strings.Contains(out, `# test = "go test ./..."  (detected)`) {
+		t.Errorf("detected test command not rendered as a labelled comment:\n%s", out)
+	}
+	if !strings.Contains(out, `# typecheck = ""  (no local evidence)`) {
+		t.Errorf("undetected command should stay distinguishable from an empty declaration:\n%s", out)
+	}
+}
+
+func TestRenderedCommandsDoNotParseAsDeclarations(t *testing.T) {
+	// The claim above, proven by the parser rather than by string matching:
+	// a freshly rendered policy must override nothing.
+	out := render(
+		detect.Stack{},
+		detect.Commands{Test: "go test ./...", Build: "go build ./...",
+			Typecheck: "tsc --noEmit", Lint: "go vet ./..."},
+		scope.DefaultPolicy(),
+	)
+
+	var p scope.Policy
+	if err := toml.Unmarshal([]byte(out), &p); err != nil {
+		t.Fatalf("rendered policy does not parse: %v", err)
+	}
+	if p.Commands != (detect.Commands{}) {
+		t.Errorf("a freshly rendered policy declares command overrides: %+v", p.Commands)
+	}
+}
+
+func TestInitPreservesACommandOverride(t *testing.T) {
+	// The override exists to be durable. `vector init` is documented as safe
+	// to re-run — it refreshes what was detected — so an override that did
+	// not survive it would be withdrawn by the very command a user is told
+	// costs them nothing, and withdrawn silently.
+	root := newRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"),
+		[]byte("module example.com/x\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The lockfile is the identity detection resolves the toolchain from.
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Init(root); err != nil {
+		t.Fatalf("first Init: %v", err)
+	}
+
+	p := filepath.Join(root, ".vector", "policy.toml")
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What a human does: uncomment the line and correct it.
+	edited := strings.Replace(string(body),
+		`# lint = "go vet ./..."  (detected)`, `lint = "make lint"`, 1)
+	if edited == string(body) {
+		t.Fatalf("the detected lint line was not where the test expected it:\n%s", body)
+	}
+	if err := os.WriteFile(p, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Init(root); err != nil {
+		t.Fatalf("second Init: %v", err)
+	}
+
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		t.Fatalf("LoadPolicy after re-init: %v", err)
+	}
+	if pol.Commands.Lint != "make lint" {
+		t.Errorf("override did not survive re-init: Commands.Lint = %q", pol.Commands.Lint)
+	}
+	// And what it displaced stays on the page, so the choice can be revisited.
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), `(detected, overridden below)`) {
+		t.Errorf("the displaced detected command is no longer shown:\n%s", after)
+	}
+	// A command nobody overrode must still be regenerated as a comment.
+	if pol.Commands.Test != "" {
+		t.Errorf("re-init declared an override nobody asked for: Test = %q", pol.Commands.Test)
 	}
 }

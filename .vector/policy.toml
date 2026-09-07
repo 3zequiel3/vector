@@ -20,12 +20,17 @@ declared = "1.27.1"
 installed = "1.27.1"
 
 # Verification commands, read from the project's own manifests.
-# Vector invokes them; it never invents them. Empty = not found.
+# Vector invokes them; it never invents them.
+#
+# Shown commented out, as detected. Detection stays live — vector re-reads
+# the manifests on every run, so an upgraded project needs no edit here.
+# Uncomment a line only to correct what detection got wrong: an uncommented
+# value wins, and goes on winning until you remove it.
 [commands]
-test = "go test ./..."
+# test = "go test ./..."  (detected)
 # typecheck = ""  (no local evidence)
-build = "go build ./..."
-lint = "go vet ./..."
+# build = "go build ./..."  (detected)
+# lint = "go vet ./..."  (detected)
 
 [scope]
 # Always denied, even under a wide scope: an agent with write access
@@ -45,3 +50,7 @@ expansion_requires_evidence = true
 [mode]
 # advisory: report and continue. strict: a violation is a hard failure.
 enforcement = "advisory"
+# sandbox: let the OS deny the writes vector cannot see. A script that
+# opens a file is invisible to a tool-level hook; the sandbox is not.
+# Off by default: it changes how every Bash command in the session runs.
+sandbox = false

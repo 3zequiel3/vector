@@ -1,0 +1,19 @@
+objective = "make the policy file mean what it says: drop the field that decided nothing, and let [commands] correct detection"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/scope/**",
+  "internal/setup/**",
+  "internal/verify/**",
+  "internal/hook/**",
+  "internal/doctor/**",
+]
+
+[[expansion]]
+at = "2026-09-07T17:19:55Z"
+reason = "invariant"  # violates an explicit project invariant
+evidence = "cmd/vector/main.go:167 printed '[scope] and [mode] preserved' on re-init; this change makes a [commands] override survive too, so the line stated less than the tool now does — the project's invariant is that no output claims more or less than the evidence supports"
+write = [
+  "cmd/vector/**",
+]

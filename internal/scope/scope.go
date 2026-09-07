@@ -15,6 +15,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/3zequiel3/vector/internal/detect"
 )
 
 // Decision is the outcome of matching a path against a Ruleset.
@@ -52,6 +54,41 @@ type Policy struct {
 		Enforcement string `toml:"enforcement"` // "advisory" | "strict"
 		Sandbox     bool   `toml:"sandbox"`
 	} `toml:"mode"`
+	// Commands corrects detection, and is empty in a repository where
+	// detection is right — which is most of them.
+	//
+	// Detection reads the project's own manifests and is deliberately
+	// conservative: it knows package-manager scripts and a handful of
+	// ecosystem defaults. A Makefile, a bespoke runner, or a monorepo whose
+	// tests live behind a wrapper are all invisible to it, and until now a
+	// repository had no way to say so. `vector doctor` would report the
+	// command it could not find and offer no way to correct it.
+	Commands detect.Commands `toml:"commands"`
+}
+
+// MergeCommands lays the policy's overrides over what detection found, field
+// by field.
+//
+// Per field rather than wholesale: a repository that has to correct one
+// command should not thereby have to restate the three that were already
+// right, and then keep them current by hand forever.
+//
+// Detection stays live underneath. `vector init` writes the detected commands
+// into policy.toml commented out, so an upgraded project needs no edit here;
+// only a value someone deliberately uncommented wins, and it goes on winning
+// until they remove it. That asymmetry is the point — an override is a claim a
+// human made, and vector should not quietly withdraw it.
+func (p Policy) MergeCommands(detected detect.Commands) detect.Commands {
+	over := func(dst *string, src string) {
+		if s := strings.TrimSpace(src); s != "" {
+			*dst = s
+		}
+	}
+	over(&detected.Test, p.Commands.Test)
+	over(&detected.Typecheck, p.Commands.Typecheck)
+	over(&detected.Build, p.Commands.Build)
+	over(&detected.Lint, p.Commands.Lint)
+	return detected
 }
 
 // DefaultPolicy is what a repository gets before anyone edits policy.toml.
@@ -79,7 +116,6 @@ type Scope struct {
 	TaskID     string      `toml:"-"`
 	Objective  string      `toml:"objective"`
 	Write      []string    `toml:"write"`
-	ReadOnly   []string    `toml:"read_only"`
 	Forbidden  []string    `toml:"forbidden"`
 	Expansions []Expansion `toml:"expansion"`
 }

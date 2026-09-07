@@ -417,3 +417,53 @@ func fakeBinary(t *testing.T, dir, name, script string) {
 		t.Fatal(err)
 	}
 }
+
+func TestCommandOverrideIsReportedAsAnOverride(t *testing.T) {
+	// A policy.toml written by an older vector rendered the detected commands
+	// as live TOML, and nothing read them back. They are overrides now. A
+	// stale one keeps winning after the project has moved, so the one thing
+	// doctor must not do is show it as though detection had produced it.
+	root := newRepo(t)
+	write(t, root, "go.mod", "module example.com/x\n\ngo 1.27\n")
+	// go.sum is what makes detection resolve the toolchain: the lockfile is
+	// the identity, and without it there is no detected command to override.
+	write(t, root, "go.sum", "")
+	write(t, root, ".vector/policy.toml",
+		"[commands]\nlint = \"go vet ./... # pinned\"\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	c := find(t, rep, "verification", "lint")
+	if c.Level != "warn" {
+		t.Errorf("lint level = %q, want warn", c.Level)
+	}
+	if !strings.Contains(c.Detail, "overriding the detected") {
+		t.Errorf("detail does not name the override: %q", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "go vet ./... # pinned") {
+		t.Errorf("detail does not show what will actually run: %q", c.Detail)
+	}
+}
+
+func TestDetectedCommandIsNotReportedAsAnOverride(t *testing.T) {
+	// The mirror case, and the one that keeps the warning meaningful: a
+	// repository that overrides nothing must stay quiet.
+	root := newRepo(t)
+	write(t, root, "go.mod", "module example.com/x\n\ngo 1.27\n")
+	// go.sum is what makes detection resolve the toolchain: the lockfile is
+	// the identity, and without it there is no detected command to override.
+	write(t, root, "go.sum", "")
+	write(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if c := find(t, rep, "verification", "lint"); c.Level != "ok" {
+		t.Errorf("lint level = %q, want ok (detail: %q)", c.Level, c.Detail)
+	}
+}

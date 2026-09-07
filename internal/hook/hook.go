@@ -318,7 +318,18 @@ func sessionStart(root string) *hookOutput {
 	s := detect.Detect(root)
 	if s.PM.Name != "" && s.PM.Name != "unknown" {
 		fmt.Fprintf(&b, "Package manager: %s.", s.PM.Name)
-		c := detect.DetectCommands(root, s.PM)
+		// Merged, not raw: the agent is being told which commands to run,
+		// and telling it one command while `vector verify` runs another is
+		// how a control layer starts contradicting itself.
+		//
+		// The error is dropped because this is a hook. A policy that will not
+		// parse is a real problem, and it is `vector doctor`'s to report — a
+		// session that refuses to start over it would take the repository
+		// down instead of the diagnostic. The zero Policy overrides nothing,
+		// so the agent is told what detection found, which is what it would
+		// have been told before this existed.
+		pol, _ := scope.LoadPolicy(root)
+		c := pol.MergeCommands(detect.DetectCommands(root, s.PM))
 		var cmds []string
 		for _, pair := range [][2]string{
 			{"test", c.Test}, {"typecheck", c.Typecheck},

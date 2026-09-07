@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/3zequiel3/vector/internal/detect"
 )
 
 func ruleset(write, forbidden []string, declared bool) Ruleset {
@@ -236,5 +238,120 @@ func writeFile(t *testing.T, root, rel, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMergeCommandsOverridesFieldByField(t *testing.T) {
+	detected := detect.Commands{
+		Test:      "go test ./...",
+		Typecheck: "",
+		Build:     "go build ./...",
+		Lint:      "go vet ./...",
+	}
+
+	tests := []struct {
+		name     string
+		override detect.Commands
+		want     detect.Commands
+	}{
+		{
+			// The common case. Most repositories never touch [commands], and
+			// an empty override must leave detection exactly as it found it.
+			name:     "empty policy changes nothing",
+			override: detect.Commands{},
+			want:     detected,
+		},
+		{
+			// The reason this exists: a project whose tests hide behind a
+			// wrapper detection cannot see. Correcting one command must not
+			// cost the three that were already right.
+			name:     "one override leaves the others detected",
+			override: detect.Commands{Test: "make test"},
+			want: detect.Commands{
+				Test:      "make test",
+				Typecheck: "",
+				Build:     "go build ./...",
+				Lint:      "go vet ./...",
+			},
+		},
+		{
+			// Detection found nothing for typecheck. Supplying one is the
+			// difference between PARTIALLY_VERIFIED and a real check.
+			name:     "an override can fill what detection missed",
+			override: detect.Commands{Typecheck: "make typecheck"},
+			want: detect.Commands{
+				Test:      "go test ./...",
+				Typecheck: "make typecheck",
+				Build:     "go build ./...",
+				Lint:      "go vet ./...",
+			},
+		},
+		{
+			// An empty string is absence, not an instruction to skip. A
+			// policy cannot silently disable a check it declines to mention,
+			// because a check that vanishes is exactly the missing evidence
+			// this tool refuses to call verified.
+			name:     "an empty override does not erase a detected command",
+			override: detect.Commands{Test: "", Lint: "   "},
+			want:     detected,
+		},
+		{
+			name: "every field can be overridden at once",
+			override: detect.Commands{
+				Test: "a", Typecheck: "b", Build: "c", Lint: "d",
+			},
+			want: detect.Commands{Test: "a", Typecheck: "b", Build: "c", Lint: "d"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var p Policy
+			p.Commands = tt.override
+			if got := p.MergeCommands(detected); got != tt.want {
+				t.Errorf("MergeCommands() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMergeCommandsDoesNotMutateTheDetectedValue(t *testing.T) {
+	// Callers detect once and may report the raw result alongside the merged
+	// one. Merging must not reach back and edit what detection actually found.
+	detected := detect.Commands{Test: "go test ./..."}
+	var p Policy
+	p.Commands = detect.Commands{Test: "make test"}
+
+	_ = p.MergeCommands(detected)
+
+	if detected.Test != "go test ./..." {
+		t.Errorf("detected was mutated: Test = %q", detected.Test)
+	}
+}
+
+func TestPolicyCommandsRoundTripThroughTOML(t *testing.T) {
+	// The override is only useful if a human can write it into policy.toml and
+	// have it survive the load, which is the one path nothing else covers.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".vector"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[commands]\ntest = \"make test\"\n\n[mode]\nenforcement = \"strict\"\n"
+	if err := os.WriteFile(filepath.Join(dir, ".vector", "policy.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := LoadPolicy(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicy: %v", err)
+	}
+	if p.Commands.Test != "make test" {
+		t.Errorf("Commands.Test = %q, want %q", p.Commands.Test, "make test")
+	}
+	// A policy that declares commands must not thereby lose the defaults it
+	// never mentioned — the forbidden set is what keeps vector's own config
+	// out of reach.
+	if len(p.Scope.AlwaysForbidden) == 0 {
+		t.Error("always_forbidden was emptied by a policy that did not mention it")
 	}
 }

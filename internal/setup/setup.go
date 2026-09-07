@@ -162,12 +162,18 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 	}
 
 	b.WriteString("\n# Verification commands, read from the project's own manifests.\n")
-	b.WriteString("# Vector invokes them; it never invents them. Empty = not found.\n")
+	b.WriteString("# Vector invokes them; it never invents them.\n")
+	b.WriteString("#\n")
+	b.WriteString("# Shown commented out, as detected. Detection stays live — vector re-reads\n")
+	b.WriteString("# the manifests on every run, so an upgraded project needs no edit here.\n")
+	b.WriteString("# Uncomment a line only to correct what detection got wrong: an uncommented\n")
+	b.WriteString("# value wins, survives `vector init`, and goes on winning until you\n")
+	b.WriteString("# remove it.\n")
 	b.WriteString("[commands]\n")
-	kvs(&b, "test", c.Test)
-	kvs(&b, "typecheck", c.Typecheck)
-	kvs(&b, "build", c.Build)
-	kvs(&b, "lint", c.Lint)
+	kvc(&b, "test", c.Test, p.Commands.Test)
+	kvc(&b, "typecheck", c.Typecheck, p.Commands.Typecheck)
+	kvc(&b, "build", c.Build, p.Commands.Build)
+	kvc(&b, "lint", c.Lint, p.Commands.Lint)
 
 	b.WriteString("\n[scope]\n")
 	b.WriteString("# Always denied, even under a wide scope: an agent with write access\n")
@@ -190,6 +196,35 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 		}
 	}
 	return b.String()
+}
+
+// kvc renders one verification command, keeping detection and override apart
+// on the page the way the rest of this file keeps declared and installed apart.
+//
+// A detected value is written as a comment, never as a declaration. That is the
+// whole reason [commands] can be read back at all: if init wrote it as live
+// TOML it would become an override the moment policy started being consulted,
+// and the project would be frozen at whatever its manifests said the day init
+// ran, with nothing on screen to suggest that had happened.
+//
+// An override is written live, and survives regeneration. It is the one thing
+// in this section a human decided, and init exists to refresh what was
+// detected — not to overrule what was chosen. When detection also found
+// something, both are shown: the override is the answer, and what it displaced
+// is the context for deciding whether it is still wanted.
+func kvc(b *strings.Builder, key, detected, override string) {
+	if strings.TrimSpace(override) == "" {
+		if detected == "" {
+			fmt.Fprintf(b, "# %s = \"\"  (no local evidence)\n", key)
+			return
+		}
+		fmt.Fprintf(b, "# %s = %q  (detected)\n", key, detected)
+		return
+	}
+	if detected != "" {
+		fmt.Fprintf(b, "# %s = %q  (detected, overridden below)\n", key, detected)
+	}
+	fmt.Fprintf(b, "%s = %q\n", key, override)
 }
 
 func kvs(b *strings.Builder, key, val string) {

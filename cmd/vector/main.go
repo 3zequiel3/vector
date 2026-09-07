@@ -164,7 +164,7 @@ func runInit(args []string) int {
 
 	verb := "written"
 	if res.Existed {
-		verb = "regenerated ([scope] and [mode] preserved)"
+		verb = "regenerated ([scope], [mode] and any [commands] override preserved)"
 	}
 	fmt.Printf("%s %s\n\n", res.PolicyPath, verb)
 

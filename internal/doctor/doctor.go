@@ -127,7 +127,7 @@ func Run(dir string) (Report, error) {
 
 	pol := checkPolicy(b, root)
 	stack := checkStack(b, root)
-	checkCommands(b, root, stack)
+	checkCommands(b, root, stack, pol)
 	checkScopes(b, root, pol)
 	tier := checkEnforcement(b, root)
 	checkBinary(b)
@@ -210,15 +210,20 @@ func checkStack(b *builder, root string) detect.Stack {
 	return s
 }
 
-func checkCommands(b *builder, root string, s detect.Stack) {
-	cmds := detect.DetectCommands(root, s.PM)
+func checkCommands(b *builder, root string, s detect.Stack, pol scope.Policy) {
+	// The merged view, because doctor's whole job is to report what will
+	// actually happen. Checking the detected command while verify runs an
+	// overridden one would make the diagnostic wrong in exactly the
+	// repository that needed the override.
+	detected := detect.DetectCommands(root, s.PM)
+	cmds := pol.MergeCommands(detected)
 	named := []struct {
-		name, cmd string
+		name, cmd, detected string
 	}{
-		{"test", cmds.Test},
-		{"typecheck", cmds.Typecheck},
-		{"build", cmds.Build},
-		{"lint", cmds.Lint},
+		{"test", cmds.Test, detected.Test},
+		{"typecheck", cmds.Typecheck, detected.Typecheck},
+		{"build", cmds.Build, detected.Build},
+		{"lint", cmds.Lint, detected.Lint},
 	}
 	any := false
 	for _, c := range named {
@@ -226,6 +231,22 @@ func checkCommands(b *builder, root string, s detect.Stack) {
 			continue
 		}
 		any = true
+		// An override is never reported as if it were detection.
+		//
+		// It is a legitimate thing to declare, and it is also what a
+		// policy.toml written by an older vector now silently contains —
+		// that release rendered the detected commands as live TOML, and
+		// nothing read them back, so nobody had reason to remove them.
+		// Those values are now overrides, and a stale one goes on winning
+		// after the project has moved. Doctor cannot tell a deliberate
+		// override from a leftover, so it declines to guess and shows the
+		// difference instead.
+		if c.detected != "" && c.detected != c.cmd {
+			b.add("verification", c.name, Warn,
+				fmt.Sprintf("%q from [commands], overriding the detected %q", c.cmd, c.detected),
+				"remove it from policy.toml to go back to detection, or leave it if it is deliberate")
+			continue
+		}
 		// A command naming a binary that is not installed would fail at
 		// verification time and look like a broken change instead of a broken
 		// setup. Checking it now is the difference between the two.
