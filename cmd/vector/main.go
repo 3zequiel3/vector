@@ -16,6 +16,7 @@ import (
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/doctor"
 	"github.com/3zequiel3/vector/internal/gitx"
+	"github.com/3zequiel3/vector/internal/hook"
 	"github.com/3zequiel3/vector/internal/observe"
 	"github.com/3zequiel3/vector/internal/scope"
 	"github.com/3zequiel3/vector/internal/setup"
@@ -32,6 +33,10 @@ Usage:
   vector observe list               list recorded observations
   vector audit [-task <id>]         compare the working tree against the boundary
   vector doctor                     check whether vector is actually doing anything
+  vector uninstall                  unregister vector's hooks, leaving others intact
+
+init flags:
+  -no-hooks      do not register hooks in the detected agent
 
 audit flags:
   -task <id>     task whose scope to enforce (.vector/scope/<id>.toml)
@@ -80,6 +85,10 @@ func main() {
 		os.Exit(runAudit(os.Args[2:]))
 	case "doctor":
 		os.Exit(runDoctor(os.Args[2:]))
+	case "uninstall":
+		os.Exit(runUninstall(os.Args[2:]))
+	case "hook":
+		os.Exit(runHook(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -104,6 +113,7 @@ func runInit(args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dir := fs.String("C", ".", "directory to run in")
+	noHooks := fs.Bool("no-hooks", false, "do not register hooks in the detected agent")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -166,6 +176,62 @@ func runInit(args []string) int {
 
 	for _, n := range s.Notes {
 		fmt.Printf("\n  note: %s\n", n)
+	}
+
+	if !*noHooks {
+		hr, err := setup.InstallClaudeHooks(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nvector: hooks not registered: %v\n", err)
+			return exitUsage
+		}
+		fmt.Println()
+		switch {
+		case len(hr.Added) > 0:
+			fmt.Printf("hooks registered in %s: %s\n", hr.Path, strings.Join(hr.Added, ", "))
+			fmt.Println("  from here on, just run your agent normally")
+		case len(hr.Present) > 0:
+			fmt.Printf("hooks already registered in %s\n", hr.Path)
+		}
+	}
+	return 0
+}
+
+func runUninstall(args []string) int {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dir := fs.String("C", ".", "directory to run in")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	root, code := repoRoot(*dir)
+	if code != 0 {
+		return code
+	}
+	hr, err := setup.RemoveClaudeHooks(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
+		return exitUsage
+	}
+	if len(hr.Added) == 0 {
+		fmt.Println("no vector hooks were registered")
+		return 0
+	}
+	fmt.Printf("unregistered from %s: %s\n", hr.Path, strings.Join(hr.Added, ", "))
+	fmt.Println("  .vector/ is left in place; remove it by hand if you want it gone")
+	return 0
+}
+
+// runHook is the hot path: one invocation per tool call. It stays silent on
+// failure, because a hook that errors loudly on every call is a hook people
+// disable.
+func runHook(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: vector hook <session-start|pre-tool|stop>")
+		return exitUsage
+	}
+	if err := hook.Run(args[0], os.Stdin, os.Stdout, "."); err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
+		return 0
 	}
 	return 0
 }

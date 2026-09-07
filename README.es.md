@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-42-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-62-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -79,7 +79,9 @@ cd tu-proyecto
 vector init
 ```
 
-Eso es todo el setup. Seguí usando `claude`, `codex`, `cursor` o lo que ya uses — vector no se mete en tu flujo.
+`init` detecta el stack, escribe `.vector/policy.toml` y registra sus hooks en `.claude/settings.json` — mergeando con lo que ya haya, nunca reemplazándolo. `vector uninstall` saca exactamente esas entradas y deja el resto intacto.
+
+**Eso es todo el setup.** Seguí corriendo `claude` como siempre. Nunca declarás un alcance, nunca pasás un id de tarea, nunca te tenés que acordar de auditar. Usá `--no-hooks` si preferís cablearlo a mano.
 
 > La salida de la CLI está en inglés. Los ejemplos de consola de abajo la muestran tal cual es.
 
@@ -89,33 +91,65 @@ Eso es todo el setup. Seguí usando `claude`, `codex`, `cursor` o lo que ya uses
 
 | comando | qué hace |
 | --- | --- |
-| `vector init` | detecta el stack y escribe `.vector/policy.toml` |
-| `vector scope new <id> -w <pat>` | declara el alcance de una tarea |
+| `vector init` | detecta el stack, escribe la config y registra los hooks |
+| `vector uninstall` | saca los hooks, dejando los demás intactos |
+| `vector doctor` | verifica que vector esté haciendo algo |
+| `vector audit` | compara el working tree contra el límite |
+
+Estos los corre el agente; vos casi nunca:
+
+| comando | qué hace |
+| --- | --- |
+| `vector scope new <id> -w <pat>` | declara el alcance de una tarea y lo activa |
 | `vector scope expand <id> -w <pat>` | lo ensancha, con motivo y evidencia |
 | `vector scope list` | lista los alcances declarados |
 | `vector observe "<nota>"` | registra algo notado, sin actuar sobre ello |
 | `vector observe list` | lista las observaciones registradas |
-| `vector audit [-task <id>]` | compara el working tree contra el límite |
-| `vector doctor` | verifica que vector esté haciendo algo |
 
 ### Una sesión
 
+Vos escribís dos palabras. Todo lo demás son los hooks.
+
 ```console
-$ vector scope new filtro-fecha -o "agregar filtro por fecha al dashboard" \
-    -w "src/dashboard/**" -w "src/dashboard/__tests__/**"
-.vector/scope/filtro-fecha.toml written
-
-$ claude                                    # tu flujo de siempre, intacto
+$ claude
 > agregá un filtro por fecha al dashboard
-
-$ vector audit -task filtro-fecha
-OUT OF SCOPE — 2 of 9 file(s) were not declared
-  objective: agregar filtro por fecha al dashboard
-  out_of_scope   src/middleware/auth.ts
-  out_of_scope   src/lib/session.ts
 ```
 
-Dos archivos que nadie pidió. Ese número es lo que esta herramienta existe para producir.
+`SessionStart` le pasa al agente los comandos reales del proyecto y una sola instrucción: declará tu límite cuando lo sepas.
+
+```
+vector is active in this repository.
+Package manager: pnpm. Verification — test: pnpm run test; build: pnpm run build.
+No scope is declared. Once you know which files this task needs — after
+exploring, before your first edit — declare it:
+  vector scope new <short-id> -o "<objective>" -w "<path pattern>"
+```
+
+**El alcance lo declara el agente, no vos.** Ese orden es todo el punto: después de explorar sabe qué archivos necesita la tarea, y antes de explorar no lo sabe nadie. Pedirle a una persona que prediga rutas de antemano es pedirle que haga el trabajo por el que abrió el agente.
+
+Después `PreToolUse` decide cada escritura. Dentro del alcance, no dice nada:
+
+```console
+$ # Write src/dashboard/Filter.tsx  →  (silencio)
+```
+
+Fuera del alcance, reporta y ofrece las dos salidas honestas:
+
+```
+vector: src/middleware/auth.ts is outside the declared scope. Continuing
+(advisory mode). If this belongs to the task, run `vector scope expand
+date-filter -w "<pattern>" -reason blocking -evidence "<what proves it>"`;
+if it does not, leave it and record it with `vector observe "<note>"`.
+```
+
+Y una ruta prohibida se deniega de una, incluso a través de la shell — la forma que se le escapa a un hook que solo mira `Edit` y `Write`:
+
+```console
+$ # Bash: cat > .env << EOF
+vector: .env is forbidden by .env
+```
+
+`Stop` corre el audit al cerrar el turno, así ves el resultado sin pedirlo.
 
 ---
 
@@ -201,7 +235,7 @@ vector es honesto sobre qué nivel alcanza realmente, y `vector doctor` lo repor
 | nivel | mecanismo | garantía |
 | --- | --- | --- |
 | **T3** confinamiento | sandbox del SO (Seatbelt, bubblewrap) | absoluta — sobrevive a un hook evadido |
-| **T5** intercepción | hook nativo `PreToolUse` | alta, con [~5 % de fugas documentadas](https://github.com/anthropics/claude-code/issues/45427) |
+| **T5** intercepción | hook nativo `PreToolUse` — **lo que registra `vector init`** | alta, con [~5 % de fugas documentadas](https://github.com/anthropics/claude-code/issues/45427) |
 | **T2** observación | `git diff` contra el límite | **la detección es total, la prevención es nula** |
 | **T1** consejo | `AGENTS.md`, `CLAUDE.md` | ninguna |
 
@@ -239,18 +273,18 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-El núcleo determinístico está completo y se usa sobre sí mismo: 8 comandos, 42 tests, cero llamadas a modelos.
+Funcionando y usado sobre sí mismo: 10 comandos, 62 tests, cero llamadas a modelos, dos dependencias.
 
-El hook `PreToolUse` —la pieza que mueve el enforcement de T2 a T5— **todavía no está construido**, deliberadamente. Son tres semanas de trabajo justificadas por un número que nadie midió: la línea base de acciones fuera de alcance en repositorios reales. `vector audit` es el instrumento de esa medición, y por eso vino primero.
+Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
-Hasta entonces, vector detecta. No previene, y lo dice.
+Sigue abierto: `vector verify`, la mitad evidencia del veredicto. `policy.toml` ya detecta `test`, `typecheck`, `build` y `lint`, y nadie los corre — así que hoy `audit` puede decir "en alcance" de un cambio que no compila. Hasta que eso exista, un veredicto cubre a dónde fue el cambio, no si funciona.
 
 ---
 
 ## Desarrollo
 
 ```bash
-go test ./...        # 42 tests
+go test ./...        # 62 tests
 go vet ./...
 gofmt -l .
 ```

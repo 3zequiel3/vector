@@ -148,3 +148,30 @@ func TestInitPreservesTheHumanOwnedSections(t *testing.T) {
 		t.Errorf("always_forbidden = %v, want the customized list", res.Policy.Scope.AlwaysForbidden)
 	}
 }
+
+func TestNewScopeSelectsTheTaskItDeclares(t *testing.T) {
+	// Without this, every later command needs -task and the hook enforces
+	// nothing, because it looks up the active task and finds none.
+	root := newRepo(t)
+	if _, err := NewScope(root, "task", "objective", []string{"src/**"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scope.Current(root); got != "task" {
+		t.Errorf("Current = %q, want the scope just declared", got)
+	}
+}
+
+func TestCurrentIgnoresAPointerToADeletedScope(t *testing.T) {
+	// A stale pointer would silently enforce a boundary nobody declared for
+	// this work, which is worse than enforcing none.
+	root := newRepo(t)
+	if _, err := NewScope(root, "task", "objective", []string{"src/**"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, ".vector", "scope", "task.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if got := scope.Current(root); got != "" {
+		t.Errorf("Current = %q, want empty when the scope file is gone", got)
+	}
+}

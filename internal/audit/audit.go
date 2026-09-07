@@ -102,7 +102,13 @@ func Run(opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	sc, err := scope.LoadScope(root, opts.TaskID)
+	// An empty TaskID means "whatever task is active", so that no everyday
+	// command has to carry a -task flag.
+	taskID := opts.TaskID
+	if taskID == "" {
+		taskID = scope.Current(root)
+	}
+	sc, err := scope.LoadScope(root, taskID)
 	if err != nil {
 		return Report{}, err
 	}

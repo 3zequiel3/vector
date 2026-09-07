@@ -259,3 +259,67 @@ func LoadScope(root, taskID string) (*Scope, error) {
 	s.TaskID = taskID
 	return &s, nil
 }
+
+// currentFile points at the task whose scope is in force. It exists so that no
+// everyday command needs a -task flag: typing an id on every invocation is the
+// kind of friction that gets a tool uninstalled.
+func currentFile(root string) string {
+	return filepath.Join(root, ".vector", "current")
+}
+
+// SetCurrent records which task is active.
+func SetCurrent(root, taskID string) error {
+	if err := os.MkdirAll(filepath.Join(root, ".vector"), 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(currentFile(root), taskID+"\n")
+}
+
+// Current returns the active task, or "" when none is set. A missing pointer is
+// a normal state, not an error.
+func Current(root string) string {
+	data, err := os.ReadFile(currentFile(root))
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return ""
+	}
+	// A pointer to a scope that no longer exists is stale, and answering with
+	// it would silently enforce a boundary nobody declared for this work.
+	if _, err := os.Stat(filepath.Join(root, ".vector", "scope", id+".toml")); err != nil {
+		return ""
+	}
+	return id
+}
+
+// ClearCurrent forgets the active task.
+func ClearCurrent(root string) error {
+	err := os.Remove(currentFile(root))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// writeFileAtomic writes via a temporary file and a rename, so a crash cannot
+// leave a half-written pointer behind.
+func writeFileAtomic(path, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".vector-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}

@@ -269,6 +269,13 @@ func checkScopes(b *builder, root string, pol scope.Policy) {
 		}
 		b.add("scopes", id, OK, detail, "")
 	}
+	if cur := scope.Current(root); cur != "" {
+		b.add("scopes", "active", Info, cur+" — used when -task is omitted", "")
+	} else {
+		b.add("scopes", "active", Warn,
+			"none selected; audit falls back to checking forbidden paths only",
+			"run: vector scope new <id> -w <pattern>")
+	}
 	if !pol.Scope.ExpansionRequiresEvidence {
 		b.add("scopes", "expansion", Warn,
 			"expansion_requires_evidence = false; the boundary can widen on assertion alone",

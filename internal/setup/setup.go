@@ -172,6 +172,12 @@ func NewScope(root, taskID, objective string, write []string) (string, error) {
 	if err := writeAtomic(path, b.String()); err != nil {
 		return "", err
 	}
+	// Declaring a scope is also choosing it. Nobody declares a boundary they do
+	// not intend to work under right now, and making them then select it would
+	// be a second step for no decision.
+	if err := scope.SetCurrent(root, taskID); err != nil {
+		return "", err
+	}
 	return rel(root, path), nil
 }
 

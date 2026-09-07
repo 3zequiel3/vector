@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-42-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-62-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -79,41 +79,72 @@ cd your-project
 vector init
 ```
 
-That is the whole setup. Keep using `claude`, `codex`, `cursor` or whatever you already use — vector does not sit in your workflow.
+`init` detects the stack, writes `.vector/policy.toml`, and registers its hooks in `.claude/settings.json` — merging into whatever is already there, never replacing it. `vector uninstall` removes exactly those entries and leaves the rest alone.
+
+**That is the whole setup.** Keep running `claude` the way you always have. You never declare a scope, never pass a task id, never remember to audit. Use `--no-hooks` if you would rather wire it yourself.
 
 ---
 
 ## Commands
 
 ```
-vector init                       detect the stack, write .vector/policy.toml
-vector scope new <id> -w <pat>    declare a task's boundary
+vector init                       detect the stack, write config, register hooks
+vector uninstall                  unregister the hooks, leaving others intact
+vector doctor                     check whether vector is actually doing anything
+vector audit                      compare the working tree against the boundary
+
+# the agent runs these; you rarely will
+vector scope new <id> -w <pat>    declare a task's boundary (and make it active)
 vector scope expand <id> -w <pat> widen it, with a reason and evidence
 vector scope list                 list declared scopes
 vector observe "<note>"           record something noticed, without acting on it
 vector observe list               list recorded observations
-vector audit [-task <id>]         compare the working tree against the boundary
-vector doctor                     check whether vector is actually doing anything
 ```
 
 ### A session
 
+You type two words. Everything else is the hooks.
+
 ```console
-$ vector scope new date-filter -o "add a date filter to the dashboard" \
-    -w "src/dashboard/**" -w "src/dashboard/__tests__/**"
-.vector/scope/date-filter.toml written
-
-$ claude                                    # your normal workflow, untouched
+$ claude
 > add a date filter to the dashboard
-
-$ vector audit -task date-filter
-OUT OF SCOPE — 2 of 9 file(s) were not declared
-  objective: add a date filter to the dashboard
-  out_of_scope   src/middleware/auth.ts
-  out_of_scope   src/lib/session.ts
 ```
 
-Two files nobody asked for. That is the number this tool exists to produce.
+`SessionStart` hands the agent the project's real commands and one instruction: declare your boundary once you know it.
+
+```
+vector is active in this repository.
+Package manager: pnpm. Verification — test: pnpm run test; build: pnpm run build.
+No scope is declared. Once you know which files this task needs — after
+exploring, before your first edit — declare it:
+  vector scope new <short-id> -o "<objective>" -w "<path pattern>"
+```
+
+**The agent declares the scope, not you.** That ordering is the point: after exploring it knows which files the task needs, and before exploring nobody does. Asking a person to predict paths up front is asking them to do the work they opened the agent for.
+
+Then `PreToolUse` decides every write. In scope, it says nothing:
+
+```console
+$ # Write src/dashboard/Filter.tsx  →  (silence)
+```
+
+Out of scope, it reports and offers both honest ways out:
+
+```
+vector: src/middleware/auth.ts is outside the declared scope. Continuing
+(advisory mode). If this belongs to the task, run `vector scope expand
+date-filter -w "<pattern>" -reason blocking -evidence "<what proves it>"`;
+if it does not, leave it and record it with `vector observe "<note>"`.
+```
+
+And a forbidden path is denied outright, including through the shell — the shape that slips past a hook watching only `Edit` and `Write`:
+
+```console
+$ # Bash: cat > .env << EOF
+vector: .env is forbidden by .env
+```
+
+`Stop` runs the audit as the turn ends, so you see the result without asking.
 
 ---
 
@@ -199,7 +230,7 @@ vector is honest about which tier it actually reaches, and `vector doctor` repor
 | tier | mechanism | guarantee |
 | --- | --- | --- |
 | **T3** confinement | OS sandbox (Seatbelt, bubblewrap) | absolute — survives a bypassed hook |
-| **T5** interception | native `PreToolUse` hook | high, with [~5 % documented leaks](https://github.com/anthropics/claude-code/issues/45427) |
+| **T5** interception | native `PreToolUse` hook — **what `vector init` registers** | high, with [~5 % documented leaks](https://github.com/anthropics/claude-code/issues/45427) |
 | **T2** observation | `git diff` against the boundary | **detection is total, prevention is none** |
 | **T1** advice | `AGENTS.md`, `CLAUDE.md` | none |
 
@@ -237,18 +268,18 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-The deterministic core is complete and dogfooded: 8 commands, 42 tests, zero model calls.
+Working and dogfooded: 10 commands, 62 tests, zero model calls, two dependencies.
 
-The `PreToolUse` hook — the piece that moves enforcement from T2 to T5 — is **not built yet**, deliberately. It is three weeks of work justified by a number nobody has measured: the out-of-scope baseline on real repositories. `vector audit` is the instrument for that measurement, which is why it came first.
+Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
-Until then, vector detects. It does not prevent, and it says so.
+Still open: `vector verify`, the evidence half of a verdict. `policy.toml` already detects `test`, `typecheck`, `build` and `lint`, and nothing runs them — so today `audit` can say "in scope" about a change that does not compile. Until that lands, a verdict covers where the change went, not whether it works.
 
 ---
 
 ## Development
 
 ```bash
-go test ./...        # 42 tests
+go test ./...        # 62 tests
 go vet ./...
 gofmt -l .
 ```
