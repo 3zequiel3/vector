@@ -457,6 +457,14 @@ func runObserve(args []string) int {
 	if code != 0 {
 		return code
 	}
+	// An observation made during a task belongs to it. Nobody passes -task by
+	// hand — the agent recording the note is mid-work and the active task is
+	// already on disk — so without this fallback the note is filed against
+	// nothing, and a later session has no way to ask what this task noticed
+	// and deliberately left alone.
+	if *task == "" {
+		*task = scope.Current(root)
+	}
 	o, err := observe.Record(root, observe.Observation{
 		Task: *task, Category: *category, Severity: *severity, Note: note,
 	})

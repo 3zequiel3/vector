@@ -12,6 +12,7 @@ import (
 
 	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/freshness"
+	"github.com/3zequiel3/vector/internal/observe"
 )
 
 func TestWriteTargetsFindsRedirections(t *testing.T) {
@@ -747,5 +748,187 @@ func TestStopSaysNothingWhenThereIsNoBoundaryToVerifyAgainst(t *testing.T) {
 	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
 	if strings.Contains(got.AdditionalContext, "vector verify") {
 		t.Errorf("context = %q, want silence with no scope declared", got.AdditionalContext)
+	}
+}
+
+func TestSessionStartRecoversTheTaskState(t *testing.T) {
+	// What a session loses at every boundary — a compaction, a handoff, a
+	// weekend — is the same three things: what was meant, what happened, and
+	// what is still unknown. All three were already on disk and nothing read
+	// them back.
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/scope/task.toml", `objective = "add a date filter"
+write = ["src/**"]
+
+[[expansion]]
+at = "2026-09-01T10:00:00Z"
+reason = "blocking"
+evidence = "typecheck fails: src/api/types.ts does not export DateFilter"
+write = ["src/api/types.ts"]
+`)
+	mk(".vector/current", "task\n")
+	if err := freshness.Record(root, freshness.Snapshot{
+		At: time.Now().Add(-50 * time.Hour), Task: "task",
+		Verdict: "PARTIALLY_VERIFIED", Passed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observe.Record(root, observe.Observation{
+		Task: "task", Category: "architecture", Severity: "medium",
+		Note: "auth middleware mixes session and token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	for _, want := range []string{
+		"task",                  // which task is live
+		"add a date filter",     // what was meant
+		"Boundary widened once", // how it grew
+		"PARTIALLY_VERIFIED",    // what happened
+		"2 day(s) ago",          // and when, so a stale answer reads as stale
+		"1 observation",         // what was noticed and left alone
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("context = %q\n  missing %q", got, want)
+		}
+	}
+}
+
+func TestSessionStartSaysOnlyWhatItHas(t *testing.T) {
+	// A task with no verdict yet, no expansion and no observation must not be
+	// described with empty scaffolding. This runs on every session, and a
+	// preamble that costs tokens to say nothing is how a control layer becomes
+	// more expensive than the waste it prevents.
+	root := newRepo(t, []string{"src/**"})
+
+	got := runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	for _, unwanted := range []string{"Last verdict", "Boundary widened", "observation"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("context = %q\n  should not mention %q with nothing to report", got, unwanted)
+		}
+	}
+	if !strings.Contains(got, "add a filter") {
+		t.Errorf("context = %q, want the objective it does have", got)
+	}
+}
+
+func TestSessionStartCountsOnlyThisTasksObservations(t *testing.T) {
+	// Observations are repo-wide and append-only; a repository that has been
+	// running a while accumulates them. Reporting the pile every session would
+	// be noise about other work, not recovery of this task.
+	root := newRepo(t, []string{"src/**"})
+	for _, task := range []string{"task", "somebody-elses", ""} {
+		if _, err := observe.Record(root, observe.Observation{
+			Task: task, Note: "note for " + task,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	if !strings.Contains(got, "1 observation(s) recorded during this task") {
+		t.Errorf("context = %q, want only this task's observation counted", got)
+	}
+}
+
+func TestAgoIsCoarse(t *testing.T) {
+	// The reader needs to know whether the last answer is from this afternoon
+	// or from before the weekend. A timestamp would be more precise and less
+	// useful.
+	now := time.Now()
+	for _, tt := range []struct {
+		at   time.Time
+		want string
+	}{
+		{now.Add(-10 * time.Second), "just now"},
+		{now.Add(-30 * time.Minute), "30 minute(s) ago"},
+		{now.Add(-5 * time.Hour), "5 hour(s) ago"},
+		{now.Add(-72 * time.Hour), "3 day(s) ago"},
+	} {
+		if got := ago(tt.at); got != tt.want {
+			t.Errorf("ago(%v) = %q, want %q", tt.at, got, tt.want)
+		}
+	}
+}
+
+func TestSessionStartWillNotHandOverAStaleVerdict(t *testing.T) {
+	// The worst place to over-claim. A session that has just started has no
+	// other memory: told "VERIFIED, three hours ago" it will reasonably treat
+	// the code as proven and not check again. If the tree moved since — the
+	// previous session kept editing, or another agent did — that sentence is
+	// the false confidence this tool exists to refuse.
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"src/**\"]\n")
+	mk(".vector/current", "task\n")
+	mk("src/filter.ts", "export const a = 1\n")
+
+	files := freshness.Hash(root, []string{"src/filter.ts"})
+	if err := freshness.Record(root, freshness.Snapshot{
+		At: time.Now().Add(-3 * time.Hour), Task: "task",
+		Verdict: "VERIFIED", Passed: true, Files: files,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unchanged: the verdict still describes the tree and is reported plainly.
+	got := runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	if !strings.Contains(got, "VERIFIED, 3 hour(s) ago.") {
+		t.Errorf("context = %q, want the verdict reported as current", got)
+	}
+	if strings.Contains(got, "UNVERIFIED") {
+		t.Errorf("context = %q, called a current verdict stale", got)
+	}
+
+	// Edited since: the same verdict is now a claim about a tree that is gone.
+	mk("src/filter.ts", "export const a = 2\n")
+	got = runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	if !strings.Contains(got, "UNVERIFIED") {
+		t.Errorf("context = %q, want the stale verdict withdrawn", got)
+	}
+	if !strings.Contains(got, "changed since") {
+		t.Errorf("context = %q, want it to say why", got)
+	}
+}
+
+func TestSessionStartWithdrawsAVerdictWhoseFileIsGone(t *testing.T) {
+	// Deleting what was verified is as much a change as editing it, and it is
+	// the one a hash comparison could quietly skip.
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"src/**\"]\n")
+	mk(".vector/current", "task\n")
+	mk("src/filter.ts", "export const a = 1\n")
+
+	files := freshness.Hash(root, []string{"src/filter.ts"})
+	if err := freshness.Record(root, freshness.Snapshot{
+		At: time.Now(), Task: "task", Verdict: "VERIFIED", Passed: true, Files: files,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "src", "filter.ts")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := runEvent(t, root, "session-start", `{"cwd":"`+root+`"}`).AdditionalContext
+	if !strings.Contains(got, "UNVERIFIED") {
+		t.Errorf("context = %q, want the verdict withdrawn after its file was deleted", got)
+	}
+}
+
+func TestAgoRefusesToCallAFutureTimestampRecent(t *testing.T) {
+	// A verdict dated ahead of now is not recent, it is wrong — a skewed
+	// clock, or a snapshot from another machine. Answering the least
+	// trustworthy input with "just now" is the worst available lie.
+	got := ago(time.Now().Add(2 * time.Hour))
+	if strings.Contains(got, "just now") {
+		t.Errorf("ago(future) = %q, want it not to read as recent", got)
+	}
+	if !strings.Contains(got, "future") {
+		t.Errorf("ago(future) = %q, want it to name the problem", got)
+	}
+	// Small negatives are ordinary clock jitter between two processes, not a
+	// broken timestamp, and must not produce an alarming sentence.
+	if got := ago(time.Now().Add(2 * time.Second)); got != "just now" {
+		t.Errorf("ago(+2s) = %q, want ordinary jitter to stay quiet", got)
 	}
 }

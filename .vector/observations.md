@@ -20,3 +20,12 @@ gitx.ChangedFiles uses 'git diff --name-only' without -z, so with core.quotePath
 - action: defer
 
 Corrects OBS-001, which stated the severity backwards, and records that it is now fixed. OBS-001 said a non-ASCII path 'may be silently absent from an audit' — a false negative. It is the opposite: the quoted string reaches Decide, matches no write pattern, and the file is reported OUT_OF_SCOPE while being inside the declared boundary. Reproduced: a scope of src/** with src/año/indice.ts reported 2 out_of_scope findings. Under strict enforcement that is not a report, it is a denied write — vector refusing legitimate work in any repository with accents, Cyrillic or CJK in its paths. Fixed by passing -z to ChangedFiles and AllFiles, the same fix Numstat already had.
+
+## OBS-003
+- date: 2026-09-07
+- task: session-recovery
+- category: correctness
+- severity: low
+- action: defer
+
+sessionStart appends a sentence period directly after the joined verification commands, so a command ending in ./... renders as 'go vet ./....' — an agent copying that literally runs a command with a fourth dot. Pre-existing (hook.go, the Verification line), not introduced by session-recovery, and outside this task's boundary.

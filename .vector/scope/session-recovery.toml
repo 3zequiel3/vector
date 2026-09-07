@@ -1,0 +1,15 @@
+objective = "a new session recovers what was intended, what happened, and what is still unknown"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/hook/**",
+]
+
+[[expansion]]
+at = "2026-09-07T18:11:19Z"
+reason = "blocking"  # prevents completing the requested task
+evidence = "runObserve (cmd/vector/main.go:429) defaults -task to the empty string and never falls back to scope.Current, so an observation recorded during a task is not attributable to it — OBS-001 and OBS-002 in this repo both carry no task. Session recovery is per task by definition, so 'what was noticed and deliberately not fixed' cannot be recovered at all without this."
+write = [
+  "cmd/vector/**",
+]

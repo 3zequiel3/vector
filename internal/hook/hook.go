@@ -17,12 +17,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/freshness"
 	"github.com/3zequiel3/vector/internal/gitx"
+	"github.com/3zequiel3/vector/internal/observe"
 	"github.com/3zequiel3/vector/internal/scope"
 )
 
@@ -346,7 +348,9 @@ func sessionStart(root string) *hookOutput {
 	}
 
 	if cur := scope.Current(root); cur != "" {
-		fmt.Fprintf(&b, "Active scope: %s. Writes outside it are reported.\n", cur)
+		fmt.Fprintf(&b, "Active scope: %s.", cur)
+		resume(&b, root, cur)
+		b.WriteString(" Writes outside it are reported.\n")
 	} else {
 		b.WriteString(
 			"No scope is declared. Once you know which files this task needs — " +
@@ -356,6 +360,129 @@ func sessionStart(root string) *hookOutput {
 				"record it with `vector observe \"<note>\"` and continue.\n")
 	}
 	return &hookOutput{HookEventName: "SessionStart", AdditionalContext: b.String()}
+}
+
+// resume hands a new session the three facts that survive it.
+//
+// A task crosses sessions, compactions, subagents and days, and what is lost
+// at every one of those boundaries is the same three things: what was meant,
+// what happened, and what is still unknown. Vector already writes all three
+// down — the scope file for the objective and how the boundary grew, the
+// verdict store for the last answer and when it was reached, the observations
+// log for what was noticed and deliberately left alone. Until now nothing read
+// them back, so the state existed and no one was told.
+//
+// This is not memory, and the difference is checkable rather than rhetorical.
+// Memory grows with the conversation; this is three fields vector had already
+// computed for other reasons, and it is the same length on the first day of a
+// task as on the fortieth. If a fourth field ever seems necessary the question
+// to ask is not whether to add it but whether this has become Engram, which
+// exists, belongs to the user, and is not vector's to reimplement.
+//
+// Every read failure is silence. A session must start whatever state is on
+// disk, and a recovered fact nobody gets is cheaper than a session that will
+// not begin.
+func resume(b *strings.Builder, root, task string) {
+	if sc, err := scope.LoadScope(root, task); err == nil && sc != nil {
+		if o := strings.TrimSpace(sc.Objective); o != "" {
+			fmt.Fprintf(b, " Objective: %s.", o)
+		}
+		if n := len(sc.Expansions); n > 0 {
+			fmt.Fprintf(b, " Boundary widened %s.", times(n))
+		}
+	}
+
+	// The verdict is reported with its age, and with whether it is still about
+	// the tree in front of you.
+	//
+	// The age alone is not enough, and this is the one place where getting it
+	// wrong costs the most. A session that has just started has no other
+	// memory: told "Last verdict: VERIFIED, three hours ago", it will
+	// reasonably treat the code as already proven and not check again. If the
+	// tree moved in between — the previous session kept editing after the
+	// verdict, or another agent did — that sentence is the false confidence
+	// this tool exists to refuse, handed over at the exact moment nothing else
+	// can catch it.
+	//
+	// The comparison costs no git call. A snapshot already names every file it
+	// covered and that file's blob hash, so re-hashing those files answers it,
+	// and there are only as many of them as the change was large. What it
+	// cannot see is a file that entered the boundary since — that needs an
+	// audit, which is the Stop hook's job and is paid for once per turn there.
+	// Missing those errs toward saying "stale" less often, never more, and a
+	// verdict reported stale that is merely old costs a re-run of verify.
+	if snap, ok := freshness.Last(root, task); ok {
+		if freshness.Compare(root, snap, nil).Stale() {
+			fmt.Fprintf(b, " Last verdict: %s, %s — but the code it was about has"+
+				" changed since, so what is on disk now is UNVERIFIED.",
+				snap.Verdict, ago(snap.At))
+		} else {
+			fmt.Fprintf(b, " Last verdict: %s, %s.", snap.Verdict, ago(snap.At))
+		}
+	}
+
+	// "During", not "about" — that is what the field means, and the wording
+	// has to match or the count reads as a list of defects in this task's own
+	// work. An observation is what someone noticed while doing this and
+	// deliberately did not fix, wherever in the repository it lives.
+	//
+	// This reads the whole observations log, which is the one piece of state
+	// here with no compaction. That is deliberate rather than overlooked: the
+	// attempt log and the verdict store are written by machine on every run
+	// and would grow without bound, while an observation is written once, by
+	// hand, because someone decided it was worth writing down. A file that
+	// only grows when a person adds to it is bounded by the same thing that
+	// bounds a changelog. Compacting it would delete a human record, which is
+	// the opposite of what an append-only log in git is for.
+	if obs, err := observe.List(root); err == nil {
+		n := 0
+		for _, o := range obs {
+			if o.Task == task {
+				n++
+			}
+		}
+		if n > 0 {
+			fmt.Fprintf(b, " %d observation(s) recorded during this task and not"+
+				" acted on (`vector observe list`).", n)
+		}
+	}
+}
+
+// times renders a small count the way a sentence would.
+func times(n int) string {
+	switch n {
+	case 1:
+		return "once"
+	case 2:
+		return "twice"
+	default:
+		return fmt.Sprintf("%d times", n)
+	}
+}
+
+// ago is a coarse age, because that is the precision the reader needs: whether
+// the last answer is from this afternoon or from before the weekend. A
+// timestamp would be more precise and less useful, and it would put a date in
+// front of someone who then has to work out what it means.
+func ago(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	// A verdict dated in the future is not recent, it is wrong — a skewed
+	// clock, or a snapshot that travelled from another machine. Falling into
+	// the "just now" branch would answer the least trustworthy input with the
+	// most trustworthy-sounding output, at the one moment a new session has
+	// nothing else to go on.
+	case d < -time.Minute:
+		return "at a timestamp in the future — check the clock on whatever wrote it"
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d minute(s) ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d hour(s) ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d day(s) ago", int(d.Hours()/24))
+	}
 }
 
 // stop reports, as the turn ends, everything the evidence on disk supports
