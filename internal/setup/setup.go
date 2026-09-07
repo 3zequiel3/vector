@@ -32,6 +32,16 @@ type Result struct {
 // When a policy already exists, [scope] and [mode] are preserved verbatim and
 // only the detected sections are refreshed.
 func Init(root string) (Result, error) {
+	return InitWith(root, nil)
+}
+
+// InitWith is Init with an optional change to a human-owned setting.
+//
+// Flipping the sandbox has to go through init rather than a separate write,
+// because init is what renders the policy file: a standalone writer would be
+// overwritten by the next regeneration, and a value that quietly reverts is
+// worse than one that was never set.
+func InitWith(root string, sandbox *bool) (Result, error) {
 	policyPath := filepath.Join(root, ".vector", "policy.toml")
 	_, statErr := os.Stat(policyPath)
 	existed := statErr == nil
@@ -41,6 +51,9 @@ func Init(root string) (Result, error) {
 	pol, err := scope.LoadPolicy(root)
 	if err != nil {
 		return Result{}, err
+	}
+	if sandbox != nil {
+		pol.Mode.Sandbox = *sandbox
 	}
 
 	stack := detect.Detect(root)
@@ -165,6 +178,10 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 	b.WriteString("\n[mode]\n")
 	b.WriteString("# advisory: report and continue. strict: a violation is a hard failure.\n")
 	kvs(&b, "enforcement", p.Mode.Enforcement)
+	b.WriteString("# sandbox: let the OS deny the writes vector cannot see. A script that\n")
+	b.WriteString("# opens a file is invisible to a tool-level hook; the sandbox is not.\n")
+	b.WriteString("# Off by default: it changes how every Bash command in the session runs.\n")
+	fmt.Fprintf(&b, "sandbox = %t\n", p.Mode.Sandbox)
 
 	if len(s.Notes) > 0 {
 		b.WriteString("\n# Detection notes:\n")

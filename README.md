@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-91-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-99-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -230,7 +230,7 @@ vector is honest about which tier it actually reaches, and `vector doctor` repor
 
 | tier | mechanism | guarantee |
 | --- | --- | --- |
-| **T3** confinement | OS sandbox (Seatbelt, bubblewrap) | absolute — survives a bypassed hook |
+| **T3** confinement | OS sandbox — **what `vector init -sandbox` configures** | absolute — survives a bypassed hook, and covers writes vector cannot see |
 | **T5** interception | native `PreToolUse` hook — **what `vector init` registers** | high, with [~5 % documented leaks](https://github.com/anthropics/claude-code/issues/45427) |
 | **T2** observation | `git diff` against the boundary | **detection is total, prevention is none** |
 | **T1** advice | `AGENTS.md`, `CLAUDE.md` | none |
@@ -302,11 +302,11 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 91 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 99 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
-Still open: prebuilt releases, so installing does not require a Go toolchain; and the Codex, Cursor and Gemini hook adapters.
+Still open: the Codex, Cursor and Gemini hook adapters; verdict staleness, so a passing verify expires when the code it was about moves; and an attempt budget, so a task looping against a wall says so.
 
 ---
 
@@ -320,7 +320,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 91 tests
+go test ./...        # 99 tests
 go vet ./...
 gofmt -l .
 ```

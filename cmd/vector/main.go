@@ -40,6 +40,8 @@ Usage:
 
 init flags:
   -no-hooks      do not register hooks in the detected agent
+  -sandbox       also let the OS deny forbidden writes (persisted in policy.toml)
+  -no-sandbox    turn that off again
 
 verify flags:
   -only <name>   run just this check (repeatable): typecheck, lint, test, build
@@ -136,6 +138,8 @@ func runInit(args []string) int {
 	fs.SetOutput(os.Stderr)
 	dir := fs.String("C", ".", "directory to run in")
 	noHooks := fs.Bool("no-hooks", false, "do not register hooks in the detected agent")
+	sandboxOn := fs.Bool("sandbox", false, "let the OS deny forbidden writes")
+	sandboxOff := fs.Bool("no-sandbox", false, "turn the sandbox off again")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -144,7 +148,15 @@ func runInit(args []string) int {
 		return code
 	}
 
-	res, err := setup.Init(root)
+	// The flag is a one-time decision that persists in policy.toml, so a later
+	// bare `init` keeps whatever was chosen rather than silently reverting it.
+	var sandbox *bool
+	if *sandboxOn || *sandboxOff {
+		on := *sandboxOn
+		sandbox = &on
+	}
+
+	res, err := setup.InitWith(root, sandbox)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
 		return exitUsage
@@ -215,6 +227,23 @@ func runInit(args []string) int {
 			fmt.Printf("hooks already registered in %s\n", hr.Path)
 		}
 	}
+
+	if res.Policy.Mode.Sandbox {
+		sr, err := setup.InstallClaudeSandbox(root, res.Policy.Scope.AlwaysForbidden)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nvector: sandbox not configured: %v\n", err)
+			return exitUsage
+		}
+		switch {
+		case len(sr.Added) > 0:
+			fmt.Printf("\nOS sandbox configured in %s\n", sr.Path)
+			fmt.Println("  writes are confined to this repository, and the forbidden paths are denied")
+			fmt.Println("  Claude Code already protects its own config natively; these are the rest")
+			fmt.Println("  run /sandbox in a session to see the resolved rules")
+		default:
+			fmt.Printf("\nOS sandbox already configured in %s\n", sr.Path)
+		}
+	}
 	return 0
 }
 
@@ -229,13 +258,31 @@ func runUninstall(args []string) int {
 	if code != 0 {
 		return code
 	}
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
+		return exitUsage
+	}
+	sr, err := setup.RemoveClaudeSandbox(root, pol.Scope.AlwaysForbidden)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
+		return exitUsage
+	}
+	if len(sr.Added) > 0 {
+		fmt.Printf("withdrew %d sandbox denyWrite entr(ies) from %s\n", len(sr.Added), sr.Path)
+		fmt.Println("  sandbox.enabled left as it was — turning off a boundary is not an uninstaller's call")
+	}
+
 	hr, err := setup.RemoveClaudeHooks(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
 		return exitUsage
 	}
-	if len(hr.Added) == 0 {
+	if len(hr.Added) == 0 && len(sr.Added) == 0 {
 		fmt.Println("no vector hooks were registered")
+		return 0
+	}
+	if len(hr.Added) == 0 {
 		return 0
 	}
 	fmt.Printf("unregistered from %s: %s\n", hr.Path, strings.Join(hr.Added, ", "))

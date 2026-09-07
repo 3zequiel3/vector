@@ -25,6 +25,7 @@ import (
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/gitx"
 	"github.com/3zequiel3/vector/internal/scope"
+	"github.com/3zequiel3/vector/internal/setup"
 )
 
 // Level is the severity of a single check.
@@ -354,10 +355,35 @@ func checkEnforcement(b *builder, root string) string {
 			"none detected on PATH", "")
 	}
 
+	// The sandbox is a different axis from the hook, not a stronger version of
+	// it: it confines what a process can write regardless of whether vector
+	// recognised the write. Reporting them together is the only honest summary.
+	sandboxed := setup.SandboxEnabled(root)
+	if sandboxed {
+		b.add("enforcement", "sandbox", OK,
+			"T3 confinement — the OS denies forbidden writes, including from scripts vector cannot see",
+			"")
+	} else {
+		b.add("enforcement", "sandbox", Warn,
+			"off — a script that opens a file is invisible to a tool-level hook",
+			"turn it on with: vector init -sandbox")
+	}
+
 	if wired {
+		tier := "T5"
+		detail := "T5 interception — prevents before the write, with known leaks (~5%)"
+		if sandboxed {
+			tier = "T5+T3"
+			detail = "T5 interception plus T3 confinement — the sandbox covers what the hook cannot see"
+		}
+		b.add("enforcement", "tier", Info, detail, "")
+		return tier
+	}
+	if sandboxed {
 		b.add("enforcement", "tier", Info,
-			"T5 interception — prevents before the write, with known leaks (~5%)", "")
-		return "T5"
+			"T3 confinement without a hook — forbidden writes are denied by the OS, "+
+				"but per-task scope is only detected after the fact", "")
+		return "T3"
 	}
 	b.add("enforcement", "tier", Info,
 		"T2 observation — vector audit detects 100% after the fact, but prevents nothing", "")

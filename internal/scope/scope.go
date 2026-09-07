@@ -50,6 +50,7 @@ type Policy struct {
 	} `toml:"scope"`
 	Mode struct {
 		Enforcement string `toml:"enforcement"` // "advisory" | "strict"
+		Sandbox     bool   `toml:"sandbox"`
 	} `toml:"mode"`
 }
 

@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-91-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-99-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -235,7 +235,7 @@ vector es honesto sobre qué nivel alcanza realmente, y `vector doctor` lo repor
 
 | nivel | mecanismo | garantía |
 | --- | --- | --- |
-| **T3** confinamiento | sandbox del SO (Seatbelt, bubblewrap) | absoluta — sobrevive a un hook evadido |
+| **T3** confinamiento | sandbox del SO — **lo que configura `vector init -sandbox`** | absoluta — sobrevive a un hook evadido, y cubre escrituras que vector no ve |
 | **T5** intercepción | hook nativo `PreToolUse` — **lo que registra `vector init`** | alta, con [~5 % de fugas documentadas](https://github.com/anthropics/claude-code/issues/45427) |
 | **T2** observación | `git diff` contra el límite | **la detección es total, la prevención es nula** |
 | **T1** consejo | `AGENTS.md`, `CLAUDE.md` | ninguna |
@@ -307,11 +307,11 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 91 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 99 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
-Sigue abierto: releases precompiladas, para que instalarlo no exija tener Go; y los adapters de hooks de Codex, Cursor y Gemini.
+Sigue abierto: los adapters de hooks de Codex, Cursor y Gemini; la caducidad del veredicto, para que un verify que pasó expire cuando el código sobre el que afirmaba se mueve; y un presupuesto de intentos, para que una tarea que gira contra una pared lo diga.
 
 ---
 
@@ -325,7 +325,7 @@ realmente en cada agente. Está en inglés, como el resto de los artefactos téc
 ## Desarrollo
 
 ```bash
-go test ./...        # 91 tests
+go test ./...        # 99 tests
 go vet ./...
 gofmt -l .
 ```
