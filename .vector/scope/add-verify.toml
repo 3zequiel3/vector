@@ -1,0 +1,16 @@
+objective = "add vector verify: the evidence half of a verdict"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/verify/**",
+  "cmd/vector/**",
+]
+
+[[expansion]]
+at = "2026-09-07T08:54:03Z"
+reason = "blocking"  # prevents completing the requested task
+evidence = "the active-task pointer must be gitignored or every audit reports it as forbidden"
+write = [
+  "internal/setup/**",
+]
