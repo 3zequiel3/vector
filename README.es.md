@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-72-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-91-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -307,7 +307,7 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 72 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 91 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
@@ -315,10 +315,17 @@ Sigue abierto: releases precompiladas, para que instalarlo no exija tener Go; y 
 
 ---
 
+## Referencia
+
+[`docs/reference.md`](docs/reference.md) es la referencia completa: qué es requerido
+y qué apenas recomendado, cada comando con sus flags y códigos de salida, cada
+archivo que vector escribe y si va o no a git, y qué nivel de enforcement se alcanza
+realmente en cada agente. Está en inglés, como el resto de los artefactos técnicos.
+
 ## Desarrollo
 
 ```bash
-go test ./...        # 72 tests
+go test ./...        # 91 tests
 go vet ./...
 gofmt -l .
 ```

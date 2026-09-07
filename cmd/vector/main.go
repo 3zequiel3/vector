@@ -43,6 +43,7 @@ init flags:
 
 verify flags:
   -only <name>   run just this check (repeatable): typecheck, lint, test, build
+  -task <id>     task whose scope to enforce (defaults to the active one)
   -timeout <d>   per-command timeout (default 10m)
   -json          emit vector.verify/v1 JSON
 

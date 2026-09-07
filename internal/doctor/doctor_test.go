@@ -179,3 +179,217 @@ func TestHookDetectionNeedsAnInvocationNotTheWord(t *testing.T) {
 		}
 	}
 }
+
+// isolate replaces PATH with a directory holding only git, and HOME with an
+// empty one, so the integration checks answer about a known machine instead of
+// about whatever the developer running the suite happens to have installed.
+// git stays because doctor cannot resolve a repository without it — everything
+// else being gone is the point.
+func isolate(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed; doctor cannot run at all without it")
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(git, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("HOME", t.TempDir())
+	return bin
+}
+
+// integration returns the check for an integration by name, and fails when the
+// group forgot one: an integration silently dropped from the report is worse
+// than one reported absent.
+func integrationCheck(t *testing.T, r Report, name string) Check {
+	t.Helper()
+	return find(t, r, "integrations", name)
+}
+
+func TestEveryIntegrationIsReportedAbsentWithoutFailing(t *testing.T) {
+	// Absent optional software is a fact, not a finding. If any of these came
+	// back warn or fail, doctor would read as a list of unmet dependencies for
+	// a tool whose only dependency is git.
+	isolate(t)
+	root := newRepo(t)
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gentle-ai", "openspec", "chronicle", "atlas", "engram"} {
+		c := integrationCheck(t, rep, name)
+		if c.Level != "info" {
+			t.Errorf("%s: level = %q, want info — absence is not a warning", name, c.Level)
+		}
+		if c.Present {
+			t.Errorf("%s: present = true on an isolated machine (%s)", name, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "optional") {
+			t.Errorf("%s: detail = %q, want it to say the piece is optional", name, c.Detail)
+		}
+		if c.Unlocks == "" {
+			t.Errorf("%s: no unlocks — absence is only meaningful next to what it costs", name)
+		}
+	}
+	if rep.ExitCode() != 0 {
+		t.Errorf("ExitCode = %d, want 0: no optional piece may fail the run", rep.ExitCode())
+	}
+}
+
+func TestGitIsNamedTheOnlyHardRequirement(t *testing.T) {
+	isolate(t)
+	root := newRepo(t)
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := integrationCheck(t, rep, "git")
+	if c.Level != "ok" {
+		t.Errorf("level = %q, want ok — git demonstrably answered", c.Level)
+	}
+	if !strings.Contains(c.Detail, "only hard requirement") {
+		t.Errorf("detail = %q, want it to state that git is the only hard requirement", c.Detail)
+	}
+}
+
+func TestRepositoryIntegrationsAreDetectedFromTheirArtifacts(t *testing.T) {
+	// Each of these is detected by a file the tool actually writes, so the
+	// evidence in the report is something that exists rather than a guess.
+	isolate(t)
+	root := newRepo(t)
+	write(t, root, "openspec/changes/x/proposal.md", "# x\n")
+	write(t, root, ".ledger/fingerprints.json", "{}\n")
+	write(t, root, "CHANGES.md", "# changes\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"openspec":  "openspec/",
+		"chronicle": ".ledger/fingerprints.json",
+		"atlas":     "CHANGES.md",
+	} {
+		c := integrationCheck(t, rep, name)
+		if !c.Present {
+			t.Errorf("%s: present = false, detail = %q", name, c.Detail)
+		}
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("%s: detail = %q, want the evidence %q named", name, c.Detail, want)
+		}
+	}
+}
+
+func TestPresentIntegrationsSayVectorDoesNotReadThem(t *testing.T) {
+	// The failure this guards against is the one doctor exists to refuse:
+	// listing a piece as present and letting the reader conclude vector is
+	// already using it.
+	isolate(t)
+	root := newRepo(t)
+	write(t, root, "CHANGES.md", "# changes\n")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := integrationCheck(t, rep, "atlas")
+	if c.Use != string(notYet) {
+		t.Errorf("use = %q, want %q — nothing in vector reads CHANGES.md today", c.Use, notYet)
+	}
+	if !strings.Contains(c.Detail, "does not read it yet") {
+		t.Errorf("detail = %q, want it to say vector does not read it yet", c.Detail)
+	}
+}
+
+func TestEngramIsPresentAndReportedUnreadable(t *testing.T) {
+	// engram is the one piece that does not become usable by writing more
+	// vector code, so it must not be reported as merely "not yet".
+	isolate(t)
+	root := newRepo(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	write(t, home, ".engram/engram.db", "not really sqlite")
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := integrationCheck(t, rep, "engram")
+	if !c.Present {
+		t.Fatalf("present = false with the db in place: %q", c.Detail)
+	}
+	if c.Use != string(unreadable) {
+		t.Errorf("use = %q, want %q", c.Use, unreadable)
+	}
+	if !strings.Contains(c.Detail, "cannot read it") {
+		t.Errorf("detail = %q, want it to say vector cannot read it", c.Detail)
+	}
+}
+
+func TestGentleAIVersionIsCapturedWhenTheBinaryReportsOne(t *testing.T) {
+	bin := isolate(t)
+	fakeBinary(t, bin, "gentle-ai", "#!/bin/sh\necho 'gentle-ai 9.9.9'\n")
+	root := newRepo(t)
+
+	rep, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := integrationCheck(t, rep, "gentle-ai")
+	if !c.Present {
+		t.Fatalf("present = false with the binary on PATH: %q", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "9.9.9") {
+		t.Errorf("detail = %q, want the reported version", c.Detail)
+	}
+	if strings.Contains(c.Detail, "gentle-ai 9.9.9") {
+		t.Errorf("detail = %q, want the binary's own name dropped from its answer", c.Detail)
+	}
+}
+
+func TestAnUncooperativeBinaryIsStillReportedPresent(t *testing.T) {
+	// The version flag differs between tools and between versions of one tool.
+	// Not getting an answer says nothing about whether the binary is installed,
+	// and must not be allowed to hide it.
+	cases := []struct {
+		name   string
+		script string
+	}{
+		{"exits non-zero", "#!/bin/sh\necho 'unknown flag' >&2\nexit 1\n"},
+		{"prints usage", "#!/bin/sh\necho 'Usage: gentle-ai <command> [options]'\n"},
+		{"prints nothing", "#!/bin/sh\nexit 0\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := isolate(t)
+			fakeBinary(t, bin, "gentle-ai", tc.script)
+			root := newRepo(t)
+
+			rep, err := Run(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := integrationCheck(t, rep, "gentle-ai")
+			if !c.Present {
+				t.Fatalf("present = false: %q", c.Detail)
+			}
+			if !strings.Contains(c.Detail, "version not reported") {
+				t.Errorf("detail = %q, want it to admit the version is unknown", c.Detail)
+			}
+		})
+	}
+}
+
+// fakeBinary puts a real executable on the isolated PATH. Stubbing exec would
+// test the stub; a script that a shell actually runs tests what doctor does.
+func fakeBinary(t *testing.T, dir, name, script string) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}

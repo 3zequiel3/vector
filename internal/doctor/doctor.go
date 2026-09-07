@@ -12,6 +12,7 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/gitx"
@@ -59,6 +61,16 @@ type Check struct {
 	Level  string `json:"level"`
 	Detail string `json:"detail"`
 	Hint   string `json:"hint,omitempty"`
+
+	// The three fields below are set only by the integrations group, which
+	// answers a different question than the rest of the report: not "is
+	// enforcement working" but "what is here, and what would it buy me".
+	// They are omitempty, so a consumer written against the original shape of
+	// vector.doctor/v1 reads exactly the bytes it read before — which is why
+	// the schema name is not bumped for them.
+	Present bool   `json:"present,omitempty"`
+	Unlocks string `json:"unlocks,omitempty"`
+	Use     string `json:"use,omitempty"`
 }
 
 // Report is the full diagnostic.
@@ -84,7 +96,24 @@ func (r Report) ExitCode() int {
 type builder struct{ checks []Check }
 
 func (b *builder) add(group, name string, l Level, detail, hint string) {
-	b.checks = append(b.checks, Check{group, name, l.String(), detail, hint})
+	b.checks = append(b.checks, Check{
+		Group: group, Name: name, Level: l.String(), Detail: detail, Hint: hint,
+	})
+}
+
+// addIntegration records an optional ecosystem piece. Its level is always Info:
+// nothing in that group can be broken, only present or not, and borrowing Warn
+// for "absent" would make a warning mean two different things in one report.
+func (b *builder) addIntegration(name, detail, unlocks string, u use, present bool) {
+	b.checks = append(b.checks, Check{
+		Group:   "integrations",
+		Name:    name,
+		Level:   Info.String(),
+		Detail:  detail,
+		Present: present,
+		Unlocks: unlocks,
+		Use:     string(u),
+	})
 }
 
 // Run performs every diagnostic against the repository containing dir.
@@ -101,6 +130,7 @@ func Run(dir string) (Report, error) {
 	checkScopes(b, root, pol)
 	tier := checkEnforcement(b, root)
 	checkBinary(b)
+	checkIntegrations(b, root)
 
 	return Report{
 		Schema: "vector.doctor/v1",
@@ -416,6 +446,219 @@ func checkBinary(b *builder) {
 	b.add("installation", "binary", OK, path, "")
 }
 
+// use is Vector's actual relationship with an optional integration. The
+// distinction it draws is the whole reason the group exists: "installed" and
+// "wired up" are different facts, and a report that lets the first read as the
+// second manufactures exactly the false confidence Vector refuses elsewhere.
+type use string
+
+const (
+	// consumed means the code that ships today reads it. Nothing below is
+	// consumed yet. The constant exists so that the day something is, the
+	// report can say so — rather than the distinction being a comment that
+	// quietly stops being true.
+	consumed use = "consumed"
+	// notYet means Vector could read it and no code does. This is the honest
+	// answer for every integration except engram.
+	notYet use = "not-yet"
+	// unreadable means there is no external read path at all, so this one does
+	// not become notYet by writing more Vector code.
+	unreadable use = "unreadable"
+)
+
+// presentSuffix is what "it is here" is allowed to imply.
+func (u use) presentSuffix() string {
+	switch u {
+	case consumed:
+		return "present, and vector reads it"
+	case unreadable:
+		return "present, and vector cannot read it"
+	default:
+		return "present, and vector does not read it yet"
+	}
+}
+
+// integration is one optional ecosystem piece: how to tell it is here, what it
+// would unlock, and whether Vector reads it.
+type integration struct {
+	name string
+	// evidence returns what was actually found — a resolved path, a version
+	// the binary reported — or "" when the piece is absent. It reports
+	// observations; it never infers presence from a name.
+	evidence func(root string) string
+	// looked names where evidence searched, so "not found" is a statement
+	// about a concrete search rather than a shrug.
+	looked  string
+	unlocks string
+	use     use
+	// caveat qualifies presence when presence alone would mislead.
+	caveat string
+}
+
+// integrations is the full optional surface. Every entry here is something
+// Vector could use and — today — does not; see the use field on each.
+var integrations = []integration{
+	{
+		name:     "gentle-ai",
+		evidence: binaryEvidence("gentle-ai"),
+		looked:   "no gentle-ai on PATH",
+		unlocks: "seeding a task scope from `gentle-ai sdd-status <change> --cwd <repo> --json`, " +
+			"whose actionContext.allowedEditRoots is already a declared boundary",
+		use: notYet,
+	},
+	{
+		name: "openspec",
+		// Either half is enough: the binary without the directory is a tool
+		// looking for a project, and the directory without the binary is a
+		// project whose tool is one install away.
+		evidence: openspecEvidence,
+		looked:   "no openspec on PATH and no openspec/ directory in the repository",
+		unlocks:  "structural validation of change artifacts via `openspec validate --changes --json`",
+		use:      notYet,
+	},
+	{
+		name: "chronicle",
+		// The fingerprints file, not the directory: an empty .ledger/ proves
+		// only that something once intended to track drift.
+		evidence: repoPathEvidence(".ledger/fingerprints.json"),
+		looked:   "no .ledger/fingerprints.json in the repository",
+		unlocks:  "doc/code drift as an evidence source, read from the fingerprints chronicle already keeps",
+		use:      notYet,
+	},
+	{
+		name:     "atlas",
+		evidence: repoPathEvidence("CHANGES.md"),
+		looked:   "no CHANGES.md at the repository root",
+		unlocks:  `seeding a task scope from a change's "Leer antes" pointers`,
+		use:      notYet,
+	},
+	{
+		name:     "engram",
+		evidence: engramEvidence,
+		looked:   "no ~/.engram/engram.db",
+		unlocks:  "nothing vector can reach",
+		use:      unreadable,
+		caveat:   "no CLI and no documented external read path, so vector neither reads it nor should",
+	},
+}
+
+// checkIntegrations reports which optional ecosystem pieces are on this machine
+// and what each would unlock.
+//
+// Two rules shape the output. Absence is never a warning: these are all
+// optional, and a column of warnings would read as a list of unmet dependencies
+// for a tool that has exactly one. And presence is never reported on its own,
+// because "installed" and "used by vector" are different facts — every piece
+// here is currently the first and not the second, and a reader who takes one
+// for the other has been given a capability that does not exist.
+func checkIntegrations(b *builder, root string) {
+	// git has already answered by the time this runs — Run resolved the
+	// repository root through it. Saying so first is what makes the rest of the
+	// group legible as optional rather than as things still to install.
+	b.add("integrations", "git", OK,
+		"the only hard requirement — it resolved this repository's root", "")
+
+	for _, in := range integrations {
+		ev := in.evidence(root)
+		if ev == "" {
+			b.addIntegration(in.name,
+				in.looked+" — optional; vector works without it",
+				in.unlocks, in.use, false)
+			continue
+		}
+		detail := ev + " — " + in.use.presentSuffix()
+		if in.caveat != "" {
+			detail += ": " + in.caveat
+		}
+		b.addIntegration(in.name, detail, in.unlocks, in.use, true)
+	}
+}
+
+// binaryEvidence reports where a binary resolved, with the version it claims
+// when it will say.
+func binaryEvidence(bin string) func(string) string {
+	return func(string) string {
+		path, err := exec.LookPath(bin)
+		if err != nil {
+			return ""
+		}
+		if v := binaryVersion(bin); v != "" {
+			return v + " at " + path
+		}
+		return path + " (version not reported)"
+	}
+}
+
+// binaryVersion asks a binary what version it is, trying the two spellings that
+// are actually common.
+//
+// Failing to get one is not a finding: the flag differs between tools and
+// between versions of the same tool, and the binary is still there either way.
+// Reporting the path without a version is more truthful than reporting a usage
+// message as though it were one, which is why an answer has to be short and
+// contain a digit to be believed. The timeout is because doctor is run to
+// diagnose a broken setup, and a diagnostic that hangs on a wedged third-party
+// binary has become part of the problem.
+func binaryVersion(bin string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		out, err := exec.CommandContext(ctx, bin, args...).Output()
+		if err != nil {
+			continue
+		}
+		line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+		// Tools commonly answer with their own name first ("gentle-ai 2.4.0");
+		// repeating it next to the path would be noise.
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), bin))
+		if line == "" || len(line) > 40 || !strings.ContainsAny(line, "0123456789") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func openspecEvidence(root string) string {
+	var found []string
+	if path, err := exec.LookPath("openspec"); err == nil {
+		found = append(found, path)
+	}
+	if info, err := os.Stat(filepath.Join(root, "openspec")); err == nil && info.IsDir() {
+		found = append(found, "openspec/ in the repository")
+	}
+	return strings.Join(found, ", ")
+}
+
+// repoPathEvidence answers with the repository-relative path, not an absolute
+// one: the reader already knows which repository this is, and the absolute form
+// would say more about the machine than about the project.
+func repoPathEvidence(rel string) func(string) string {
+	return func(root string) string {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			return ""
+		}
+		return rel
+	}
+}
+
+// engramEvidence looks in the home directory rather than the repository:
+// engram's store is per-developer, and finding it says nothing about this
+// project. It is reported anyway so that "vector does not read it" is an
+// explicit answer instead of a silence someone has to interpret.
+func engramEvidence(string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".engram", "engram.db")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
+}
+
 func covers(patterns []string, path string) bool {
 	r := scope.Ruleset{Forbidden: patterns}
 	d, _ := r.Decide(path)
@@ -453,6 +696,13 @@ func (r Report) WriteText(w io.Writer) error {
 		fmt.Fprintf(&b, "  %s %-18s %s\n", symbols[c.Level], c.Name, c.Detail)
 		if c.Hint != "" && c.Level != OK.String() {
 			fmt.Fprintf(&b, "       %-18s → %s\n", "", c.Hint)
+		}
+		// What an integration would unlock is the answer to "does not having it
+		// cost me anything", so it belongs next to the line that says whether
+		// it is there — including when it is, since the reader still has to
+		// learn that vector is not using it for that yet.
+		if c.Unlocks != "" {
+			fmt.Fprintf(&b, "       %-18s → would unlock: %s\n", "", c.Unlocks)
 		}
 	}
 

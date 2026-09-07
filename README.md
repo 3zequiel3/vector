@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-72-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-91-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -302,7 +302,7 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 72 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 91 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
@@ -310,10 +310,17 @@ Still open: prebuilt releases, so installing does not require a Go toolchain; an
 
 ---
 
+## Reference
+
+[`docs/reference.md`](docs/reference.md) is the complete reference: what is required
+versus merely recommended, every command with its flags and exit codes, every file
+vector writes and whether it belongs in git, and which enforcement tier is actually
+reached on which agent.
+
 ## Development
 
 ```bash
-go test ./...        # 72 tests
+go test ./...        # 91 tests
 go vet ./...
 gofmt -l .
 ```
