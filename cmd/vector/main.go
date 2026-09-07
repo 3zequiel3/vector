@@ -68,12 +68,20 @@ observe flags:
 
 Global:
   -C <dir>       run as if started in <dir>
+  -v, --version  print the version
 
 Exit codes:
   0  in scope, no scope declared, or no changes
   1  out of scope, or a forbidden path touched
   2  usage or configuration error
 `
+
+// version is stamped at release time via -ldflags "-X main.version=...".
+//
+// The --version case below is not decoration: an unreferenced package-level
+// string is dead-code-eliminated, and -X then silently does nothing — the build
+// still exits 0 and the value is simply absent from the binary.
+var version = "dev"
 
 const exitUsage = 2
 
@@ -101,6 +109,9 @@ func main() {
 		os.Exit(runHook(os.Args[2:]))
 	case "-h", "--help", "help":
 		fmt.Print(usage)
+		os.Exit(0)
+	case "-v", "--version", "version":
+		fmt.Println("vector", version)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "vector: unknown command %q\n\n%s", os.Args[1], usage)

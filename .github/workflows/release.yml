@@ -1,0 +1,116 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken target must not ship a half-complete release.
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: set up go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build and archive
+        env:
+          # Static binaries: the whole point is that the target machine needs no
+          # Go toolchain and no libc of a particular vintage.
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
+          # Asset names carry the bare number; the binary reports the full tag,
+          # because that is the string a user will paste into a bug report.
+          version="${tag#v}"
+
+          mkdir -p dist/stage
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${tag}" \
+            -o "dist/stage/vector${EXT}" \
+            ./cmd/vector
+
+          # Ship the license and the readme inside the archive so an extracted
+          # tree is self-contained and legally complete.
+          cp LICENSE README.md dist/stage/
+
+          name="vector_${version}_${GOOS}_${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            (cd dist/stage && zip -q "../${name}.zip" "vector${EXT}" LICENSE README.md)
+          else
+            tar -C dist/stage -czf "dist/${name}.tar.gz" "vector${EXT}" LICENSE README.md
+          fi
+
+      - name: upload archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vector_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/vector_*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # The only step in the pipeline that is allowed to write to the repository.
+    permissions:
+      contents: write
+    steps:
+      - name: download archives
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist
+          pattern: vector_*
+          merge-multiple: true
+
+      - name: checksums
+        # Computed after every archive exists, in one directory, so the file
+        # covers the exact bytes that get attached to the release. install.sh
+        # verifies against this file, so its format is a contract: the plain
+        # `sha256sum` layout, names relative with no directory prefix.
+        run: |
+          set -eu
+          cd dist
+          sha256sum vector_* | tee checksums.txt
+
+      - name: publish
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            dist/vector_*
+            dist/checksums.txt
+          # A release missing an asset is worse than no release: install.sh
+          # would resolve the tag and then 404.
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only: CI never publishes anything. Releases are a separate workflow
+# with its own, narrower write grant.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: set up go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Track go.mod instead of a literal here, so the toolchain used by CI
+          # cannot silently drift from the one the module declares.
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        # gofmt -l exits 0 even when it lists files, so the emptiness of its
+        # output is the actual assertion.
+        run: |
+          set -eu
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'these files are not gofmt-clean:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -count=1 disables the test result cache; a green run here must mean
+        # the tests actually executed against this commit.
+        run: go test ./... -count=1
