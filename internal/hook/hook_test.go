@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/3zequiel3/vector/internal/attempt"
+	"github.com/3zequiel3/vector/internal/freshness"
 )
 
 func TestWriteTargetsFindsRedirections(t *testing.T) {
@@ -532,4 +533,181 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// verdictRepo is retryRepo with the verdict state gitignored too, which is
+// what `vector setup` leaves behind. Without that entry the file verify writes
+// about a run would itself show up as an undeclared path in the next audit.
+func verdictRepo(t *testing.T) string {
+	t.Helper()
+	root := newRepo(t, []string{"src/**"})
+	if err := os.WriteFile(filepath.Join(root, ".vector", ".gitignore"),
+		[]byte("current\nnudged\nattempts\nverdicts\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "Filter.tsx"),
+		[]byte("export const Filter = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A clean tree leaves the audit nothing to say, so anything the Stop hook
+	// does report came from the verdict state rather than from drift.
+	commitAll(t, root)
+	return root
+}
+
+// recordVerdict files a verdict over the given files, the way verify would.
+func recordVerdict(t *testing.T, root, verdict string, passed bool, files ...string) {
+	t.Helper()
+	if err := freshness.Record(root, freshness.Snapshot{
+		At:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Task:    "task",
+		Verdict: verdict,
+		Passed:  passed,
+		Files:   freshness.Hash(root, files),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func edit(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopReportsAStaleVerdictAndBlocksNothing(t *testing.T) {
+	// The case this exists for: someone ran verify, heard VERIFIED, kept
+	// editing, and the last thing they were told is now a claim about a tree
+	// that no longer exists. The message has to name the file, or the reader
+	// has been told nothing they can check.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "VERIFIED", true, "src/Filter.tsx")
+	edit(t, root, "src/Filter.tsx", "export const Filter = 2;\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if got.PermissionDecision != "" {
+		t.Fatalf("decision = %q, want none; staleness decides nothing", got.PermissionDecision)
+	}
+	for _, want := range []string{"stale", "src/Filter.tsx", "task", "UNVERIFIED", "nothing is blocked"} {
+		if !strings.Contains(got.AdditionalContext, want) {
+			t.Errorf("context = %q, want it to name %q", got.AdditionalContext, want)
+		}
+	}
+}
+
+func TestStopIsSilentWhileTheVerdictStillDescribesTheTree(t *testing.T) {
+	// A verdict that is still true must produce nothing. A Stop hook that
+	// speaks on every turn is one people stop reading.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "VERIFIED", true, "src/Filter.tsx")
+
+	if got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`); got != (hookOutput{}) {
+		t.Errorf("got %+v, want silence while the verdict still holds", got)
+	}
+}
+
+func TestStopSaysNothingAboutAStaleFailingVerdict(t *testing.T) {
+	// A stale FAILED misleads nobody. It was already bad news, and the editing
+	// that made it stale is exactly the response it was asking for; reporting
+	// it would be nagging someone for doing the right thing.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "FAILED", false, "src/Filter.tsx")
+	edit(t, root, "src/Filter.tsx", "export const Filter = 2;\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if strings.Contains(got.AdditionalContext, "stale") {
+		t.Errorf("context = %q, want no staleness for a verdict that already failed", got.AdditionalContext)
+	}
+}
+
+func TestANewFileInsideTheBoundaryMakesTheVerdictStale(t *testing.T) {
+	// A file created after the verdict is part of the work and was never
+	// verified, even though nothing the verdict covered was touched.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "VERIFIED", true, "src/Filter.tsx")
+	edit(t, root, "src/Added.tsx", "export const Added = 1;\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if !strings.Contains(got.AdditionalContext, "src/Added.tsx was added") {
+		t.Errorf("context = %q, want the new in-scope file named", got.AdditionalContext)
+	}
+}
+
+func TestEditingOutsideTheBoundaryIsDriftNotStaleness(t *testing.T) {
+	// The verdict never covered that file, so it cannot expire it. Drift is
+	// the audit's finding, and reporting the same path twice under two names
+	// would make both harder to act on.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "VERIFIED", true, "src/Filter.tsx")
+	edit(t, root, "elsewhere/x.ts", "undeclared\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if !strings.Contains(got.AdditionalContext, "elsewhere/x.ts") {
+		t.Fatalf("context = %q, want the drift still reported", got.AdditionalContext)
+	}
+	if strings.Contains(got.AdditionalContext, "stale") {
+		t.Errorf("context = %q, want no staleness from an out-of-scope edit", got.AdditionalContext)
+	}
+}
+
+func TestStopReportsDriftStalenessAndTheRetryLoopTogether(t *testing.T) {
+	// All three can be true at once, and each hides the others if the hook
+	// reports only the first it finds. They are ordered by how firm the claim
+	// is: paths, then bytes, then a suspicion that closes by suggesting the
+	// reader stop.
+	root := verdictRepo(t)
+	recordVerdict(t, root, "VERIFIED", true, "src/Filter.tsx")
+	edit(t, root, "src/Filter.tsx", "export const Filter = 2;\n")
+	edit(t, root, "elsewhere/x.ts", "undeclared\n")
+	failVerify(t, root, 3, 120, 300, 812)
+
+	ctx := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`).AdditionalContext
+	drift := strings.Index(ctx, "vector audit")
+	stale := strings.Index(ctx, "is stale")
+	retry := strings.Index(ctx, "failed verifies")
+	if drift < 0 || stale < 0 || retry < 0 {
+		t.Fatalf("context = %q, want all three findings kept", ctx)
+	}
+	if !(drift < stale && stale < retry) {
+		t.Errorf("context = %q, want drift then staleness then the retry signal", ctx)
+	}
+}
+
+func TestStopSurvivesCorruptVerdictState(t *testing.T) {
+	// Unreadable bookkeeping means "no prior verdict". Erroring out of the Stop
+	// hook over a state file would cost the user the end of their turn.
+	root := verdictRepo(t)
+	if err := os.WriteFile(freshness.Path(root),
+		[]byte("\x00\x01 not a snapshot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edit(t, root, "src/Filter.tsx", "export const Filter = 2;\n")
+
+	var out bytes.Buffer
+	if err := Run("stop", strings.NewReader(`{"cwd":"`+root+`"}`), &out, root); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(out.String(), "stale") {
+		t.Errorf("output = %q, want no verdict claim from corrupt state", out.String())
+	}
+}
+
+func TestStopSaysNothingAboutStalenessWithNoRecordedVerdict(t *testing.T) {
+	// A repository that has never run verify must behave exactly as it did
+	// before any of this existed, however much has been edited since.
+	root := verdictRepo(t)
+	edit(t, root, "src/Filter.tsx", "export const Filter = 2;\n")
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if strings.Contains(got.AdditionalContext, "stale") {
+		t.Errorf("context = %q, want no staleness without a recorded verdict", got.AdditionalContext)
+	}
 }

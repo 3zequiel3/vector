@@ -21,6 +21,7 @@ import (
 	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
+	"github.com/3zequiel3/vector/internal/freshness"
 	"github.com/3zequiel3/vector/internal/gitx"
 	"github.com/3zequiel3/vector/internal/scope"
 )
@@ -346,36 +347,61 @@ func sessionStart(root string) *hookOutput {
 	return &hookOutput{HookEventName: "SessionStart", AdditionalContext: b.String()}
 }
 
-// stop reports scope conformance as the turn ends, so the result is seen
-// without anyone remembering to ask for it, and reports a retry loop when the
-// recorded history supports calling it one.
+// stop reports, as the turn ends, everything the evidence on disk supports
+// saying: where the change went, whether the last verdict still describes the
+// tree, and whether the recorded history looks like a retry loop.
 //
-// The two are independent: a task can be circling inside a scope it never
-// left, and a single out-of-scope write on a first attempt is not a loop. When
-// both are true the reader gets both, because dropping either would hide a
-// finding behind an unrelated one.
+// The three are independent. A task can be circling inside a scope it never
+// left; a verdict can go stale on work that never drifted; a first out-of-scope
+// write is not a loop. When more than one is true the reader gets all of them,
+// because dropping either would hide a finding behind an unrelated one.
+//
+// They are ordered by how firm the claim is. Scope drift is a fact about paths.
+// Staleness is a fact about bytes, and it voids the standing answer, so it
+// comes before the signal that only suspects something. The retry judgement is
+// last: it is the softest of the three and it closes by telling the reader to
+// consider stopping, which is not a sentence to have findings after.
 func stop(root string) *hookOutput {
+	// One audit, reused. It answers both "did this change stay in bounds" and
+	// "which files are in bounds now", and the Stop hook has no business paying
+	// git twice for the same question.
+	rep, audited := scopeAudit(root)
+	task := scope.Current(root)
+
 	var parts []string
-	if s := scopeReport(root); s != "" {
+	if s := scopeMessage(rep, audited); s != "" {
+		parts = append(parts, s)
+	}
+	if s := staleMessage(root, task, rep); s != "" {
 		parts = append(parts, s)
 	}
 	// This costs two small file reads and no git call: verify already paid for
 	// the measurement, and the Stop hook runs once per turn.
-	if m := attempt.Judge(root, scope.Current(root)).Message(); m != "" {
+	if m := attempt.Judge(root, task).Message(); m != "" {
 		parts = append(parts, m)
 	}
 	if len(parts) == 0 {
 		return nil
 	}
-	// Reported, never decided. The Stop hook returns context only; the retry
-	// signal is a suspicion vector cannot confirm, and blocking on it would
-	// stop a fourth attempt that was about to work.
+	// Reported, never decided. The Stop hook returns context only; a retry
+	// suspicion vector cannot confirm must not stop a fourth attempt that was
+	// about to work, and a stale verdict is a question, not a failure.
 	return &hookOutput{HookEventName: "Stop", AdditionalContext: strings.Join(parts, " ")}
 }
 
-func scopeReport(root string) string {
+// scopeAudit runs the audit once for the whole hook. The bool distinguishes a
+// report from the zero value, so a caller cannot mistake "git would not answer"
+// for "nothing changed".
+func scopeAudit(root string) (audit.Report, bool) {
 	rep, err := audit.Run(audit.Options{Dir: root})
 	if err != nil {
+		return audit.Report{}, false
+	}
+	return rep, true
+}
+
+func scopeMessage(rep audit.Report, audited bool) string {
+	if !audited {
 		return ""
 	}
 	switch rep.Status {
@@ -389,4 +415,31 @@ func scopeReport(root string) string {
 	}
 	b.WriteString(" Run `vector audit` for the full report.")
 	return b.String()
+}
+
+// staleMessage reports a verdict that has been edited out from under it.
+//
+// Only a passing verdict earns this. That is the case the reader is actually
+// exposed to: someone ran verify, heard VERIFIED, kept editing, and the last
+// thing they were told is now a claim about a tree that no longer exists. A
+// stale FAILED misleads nobody — it was already bad news, and the editing that
+// made it stale is the response it was asking for.
+//
+// The hashing is here rather than in verify because this is the only moment
+// the question is live, and it is bounded on both sides. Nothing is hashed at
+// all unless verify has already recorded a passing verdict for the active task,
+// which is one small file read and the common case's whole cost. When there is
+// one, the set hashed is that verdict's in-scope files plus whatever is in
+// scope now — the size of a change, never the size of a repository — and it is
+// hashed in process, which measured at about 2ms for two hundred files.
+//
+// An audit that failed leaves rep zero, so no additions are visible. The
+// recorded files still answer whether what was verified has moved, and half an
+// answer that names its files beats none.
+func staleMessage(root, task string, rep audit.Report) string {
+	snap, ok := freshness.Last(root, task)
+	if !ok || !snap.Passed {
+		return ""
+	}
+	return freshness.Compare(root, snap, rep.InScope).Message()
 }

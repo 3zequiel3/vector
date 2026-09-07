@@ -10,6 +10,7 @@ import (
 
 	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
+	"github.com/3zequiel3/vector/internal/freshness"
 )
 
 // newRepo builds a Go repository whose verification commands vector will find
@@ -329,5 +330,176 @@ func TestASinglePassingRunCarriesNoRetrySignal(t *testing.T) {
 	}
 	if rep.Retry != "" {
 		t.Errorf("retry = %q, want none on a first run", rep.Retry)
+	}
+}
+
+// newVerdictRepo is newScopedRepo as `vector init` actually leaves it: the
+// per-developer state under .vector/ is gitignored, so the files vector writes
+// about a run are not themselves changes the next run has to explain. Without
+// that line in setup's localState, the verdict state written at the end of one
+// verify would look like a new in-scope file at the start of the next.
+func newVerdictRepo(t *testing.T) string {
+	t.Helper()
+	root := newScopedRepo(t)
+	mk(t, root, ".vector/.gitignore", "current\nnudged\nattempts\nverdicts\n")
+	return root
+}
+
+// inScopeNow asks the same question the Stop hook asks: what is inside the
+// boundary at this moment.
+func inScopeNow(t *testing.T, root string) []string {
+	t.Helper()
+	rep, err := audit.Run(audit.Options{Dir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rep.InScope
+}
+
+func TestVerifyRecordsTheTreeItsVerdictWasAbout(t *testing.T) {
+	// A verdict with no record of what it was about cannot expire, and a
+	// verdict that cannot expire is the false confidence this tool refuses:
+	// five edits later it is still the last thing anyone was told.
+	root := newVerdictRepo(t)
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap, ok := freshness.Last(root, "task")
+	if !ok {
+		t.Fatal("a verdict was reached and nothing was recorded about the tree")
+	}
+	if snap.Verdict != string(rep.Verdict) {
+		t.Errorf("recorded verdict = %q, want %q", snap.Verdict, rep.Verdict)
+	}
+	// "Passed" and the exit code must never disagree about the same run.
+	if snap.Passed != (rep.ExitCode() == ExitOK) {
+		t.Errorf("recorded passed = %v, exit code = %d", snap.Passed, rep.ExitCode())
+	}
+	// Every file the audit placed in scope has to be in there. A snapshot that
+	// covered only some of them would answer "not stale" about files it never
+	// looked at.
+	for _, f := range rep.Scope.InScope {
+		if _, ok := snap.Files[f]; !ok {
+			t.Errorf("in-scope file %s was not recorded", f)
+		}
+	}
+	if len(snap.Files) == 0 {
+		t.Error("no files recorded; the verdict was about nothing")
+	}
+
+	// And it is a true statement about the tree right now.
+	if st := freshness.Compare(root, snap, inScopeNow(t, root)); st.Stale() {
+		t.Errorf("the verdict was stale the moment it was reached: %s", st.Message())
+	}
+}
+
+func TestEditingAnInScopeFileAfterAVerdictMakesItStale(t *testing.T) {
+	// The case the whole feature exists for: someone verified, kept editing,
+	// and the last thing they heard is now a claim about a tree that is gone.
+	root := newVerdictRepo(t)
+	if _, err := Run(Options{Dir: root, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	snap, ok := freshness.Last(root, "task")
+	if !ok {
+		t.Fatal("no verdict recorded")
+	}
+
+	mk(t, root, "x.go", "package x\n\nfunc F() int { return 2 }\n")
+	st := freshness.Compare(root, snap, inScopeNow(t, root))
+	if !st.Stale() {
+		t.Fatal("an edit after the verdict left it fresh")
+	}
+	if !strings.Contains(st.Message(), "x.go") {
+		t.Errorf("message = %q, want the edited file named", st.Message())
+	}
+}
+
+func TestARunWithNoTaskRecordsNoVerdict(t *testing.T) {
+	// Without a declared scope there is no task a verdict can belong to, and
+	// filing one under a guessed key would answer a later question about the
+	// wrong work.
+	root := newRepo(t)
+	if _, err := Run(Options{Dir: root, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(freshness.Path(root)); !os.IsNotExist(err) {
+		t.Errorf("verdict state exists (%v), want none without a task", err)
+	}
+}
+
+func TestAnUnwritableVerdictStateDoesNotFailVerify(t *testing.T) {
+	// Bookkeeping is not the answer verify owes its caller. A repository where
+	// the snapshot cannot be written still gets its verdict.
+	root := newVerdictRepo(t)
+	if err := os.MkdirAll(freshness.Path(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("Run failed over state it could not write: %v", err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestAStaleVerdictNeverChangesTheVerdictOrTheExitCode(t *testing.T) {
+	// Stale is not failed; it is unknown. A run that finds a stale record from
+	// a previous run must land exactly where it would have landed without one.
+	root := newVerdictRepo(t)
+	if err := freshness.Record(root, freshness.Snapshot{
+		At: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Task: "task",
+		Verdict: string(Verified), Passed: true,
+		Files: map[string]string{"x.go": "0000000000000000000000000000000000000000"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED despite the stale record", rep.Verdict, rep.Reason)
+	}
+	if rep.ExitCode() != ExitOK {
+		t.Errorf("ExitCode = %d, want %d; staleness decides nothing", rep.ExitCode(), ExitOK)
+	}
+}
+
+func TestVerifySaysNothingAboutStaleness(t *testing.T) {
+	// verify has just re-verified. The only stale verdict it could name is the
+	// one it is replacing in the same breath, so the line would be false by the
+	// time the reader reached it. The Stop hook is where nobody re-verified and
+	// the question has an answer worth hearing.
+	root := newVerdictRepo(t)
+	if _, err := Run(Options{Dir: root, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	mk(t, root, "x.go", "package x\n\nfunc F() int { return 3 }\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := rep.WriteText(&out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(out.String()), "stale") {
+		t.Errorf("verify reported staleness about its own run:\n%s", out.String())
+	}
+
+	// It did replace the record, though: the snapshot has to describe the tree
+	// this run was about, or the Stop hook answers with the older run's hashes.
+	snap, ok := freshness.Last(root, "task")
+	if !ok {
+		t.Fatal("no verdict recorded")
+	}
+	if st := freshness.Compare(root, snap, inScopeNow(t, root)); st.Stale() {
+		t.Errorf("the second run did not replace the first's snapshot: %s", st.Message())
 	}
 }

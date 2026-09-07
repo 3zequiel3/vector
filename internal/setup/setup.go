@@ -85,7 +85,7 @@ func InitWith(root string, sandbox *bool) (Result, error) {
 // travel with it. These do not: committing the active-task pointer would make
 // every teammate's checkout fight over whose task is current, and both would
 // surface in every audit as unexplained changes.
-var localState = []string{"current", "nudged", "attempts"}
+var localState = []string{"current", "nudged", "attempts", "verdicts"}
 
 // ensureIgnored adds any missing entries to .vector/.gitignore without
 // disturbing what is already there.

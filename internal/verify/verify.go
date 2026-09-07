@@ -26,6 +26,7 @@ import (
 	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
+	"github.com/3zequiel3/vector/internal/freshness"
 	"github.com/3zequiel3/vector/internal/gitx"
 	"github.com/3zequiel3/vector/internal/scope"
 )
@@ -117,6 +118,12 @@ func Run(opts Options) (Report, error) {
 		return Report{}, err
 	}
 
+	// The tree is hashed here, before a single command runs. A verdict is a
+	// claim about the code the commands were handed, not about whatever the
+	// tree became while a five-minute suite was running; hashing afterwards
+	// would quietly extend the claim to cover edits nothing ever checked.
+	verified := freshness.Hash(root, scopeRep.InScope)
+
 	// Commands come from the project's own manifests, never from a guess.
 	stack := detect.Detect(root)
 	cmds := detect.DetectCommands(root, stack.PM)
@@ -142,7 +149,39 @@ func Run(opts Options) (Report, error) {
 
 	rep.Verdict, rep.Reason = decide(scopeRep, rep.Checks)
 	rep.Retry = record(root, scopeRep, rep)
+	remember(root, scopeRep, rep, verified)
 	return rep, nil
+}
+
+// remember files the tree this verdict was about, so a later turn can tell a
+// verdict that still describes the working tree from one that has been edited
+// out from under it.
+//
+// verify reports nothing about staleness of its own. It has just re-verified:
+// the snapshot it writes is the tree in front of it by construction, and the
+// only stale verdict it could name is the one it is replacing in the same
+// breath. Saying "your previous answer is out of date" while handing over the
+// new one is noise, and it would put a line in front of the reader that is
+// already false by the time they read it. The Stop hook is where the question
+// has an answer worth hearing, because that is where nobody re-verified.
+//
+// A run with no task records nothing, exactly as the attempt log does: a
+// snapshot belongs to the verdict it was taken for, and there is no key to
+// file it under. Every failure to write is swallowed — a lost snapshot costs a
+// reminder nobody gets, and the verdict is what verify owes its caller.
+func remember(root string, scopeRep audit.Report, rep Report, files map[string]string) {
+	if scopeRep.TaskID == "" {
+		return
+	}
+	_ = freshness.Record(root, freshness.Snapshot{
+		At:      time.Now(),
+		Task:    scopeRep.TaskID,
+		Verdict: string(rep.Verdict),
+		Files:   files,
+		// Exactly what the exit code says, so the snapshot and the process can
+		// never disagree about whether this run went well.
+		Passed: rep.ExitCode() == ExitOK,
+	})
 }
 
 // record files this run against the task, so a later turn can tell a task that
