@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -67,6 +68,91 @@ func ChangedFiles(dir, base string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// Numstat returns, per repo-relative path, how many lines a change added and
+// removed: [0] is added, [1] is removed.
+//
+// It answers a question ChangedFiles cannot — that one says which files moved,
+// this one says which direction. The base follows the same rule, and the same
+// no-HEAD fallback, so the two describe the same change.
+//
+// Untracked files are deliberately absent. git has nothing to diff a new file
+// against, and a file that did not exist before cannot have had anything
+// removed from it, so the only caller that needs this is asking about something
+// untracked files cannot be.
+//
+// A binary file's counts are reported by git as "-", and are recorded as zero:
+// the number of lines in a binary is not a fact, and inventing one to fill the
+// column would put a fabricated measurement into a verdict.
+//
+// Two flags here are load-bearing, and both were chosen against a reproduction.
+//
+// Renames are detected, unlike in ChangedFiles, because the two answer opposite
+// questions. To the audit a rename is a change to two paths and both must be in
+// bounds. To a caller asking what a change removed, a rename is nothing at all:
+// with renames off, `git mv a_test.go b_test.go` reports ten lines deleted from
+// a file that moved byte for byte, and a tool that calls that "the suite that
+// passed is not the suite that was there" is one nobody keeps installed.
+//
+// -z is what makes the paths trustworthy. Under git's default core.quotePath a
+// path with a non-ASCII byte comes back C-quoted and octal-escaped —
+// "unicode/t\303\253st_test.go" — and a caller matching on the end of that
+// string is matching on a trailing quote. -z emits raw bytes and NUL
+// separators, so nothing has to be unquoted and a path may contain anything but
+// NUL, including tabs and newlines.
+func Numstat(dir, base string) (map[string][2]int, error) {
+	ref := base
+	if ref == "" {
+		ref = "HEAD"
+	}
+	args := []string{"diff", "--numstat", "-z", ref}
+	if base == "" && !hasHEAD(dir) {
+		args = []string{"diff", "--numstat", "-z", "--cached"}
+	}
+	out, err := run(dir, args...)
+	if err != nil {
+		return nil, fmt.Errorf("git diff --numstat: %w", err)
+	}
+
+	// Under -z a plain entry is one record, "added\tdeleted\tpath". A rename
+	// is three: "added\tdeleted\t" with the path field empty, then the old
+	// path, then the new one. The new path is the file that exists now, and
+	// the one a later question about it will be asked under.
+	stats := map[string][2]int{}
+	recs := strings.Split(out, "\x00")
+	for i := 0; i < len(recs); i++ {
+		fields := strings.SplitN(recs[i], "\t", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		path := fields[2]
+		if path == "" {
+			if i+2 >= len(recs) {
+				continue
+			}
+			path = recs[i+2]
+			i += 2
+		}
+		if path == "" {
+			continue
+		}
+		stats[filepath.ToSlash(path)] = [2]int{
+			count(fields[0]), count(fields[1]),
+		}
+	}
+	return stats, nil
+}
+
+// count parses one numstat column, treating git's "-" for binary content as
+// zero rather than as an error: a binary file in the diff is not a reason to
+// refuse to report the text files beside it.
+func count(field string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(field))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // AllFiles lists every file in the repository that git would consider part of

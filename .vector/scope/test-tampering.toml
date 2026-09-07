@@ -1,0 +1,17 @@
+objective = "nothing is VERIFIED if the change under judgement subtracted from the tests that judge it"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/suite/**",
+  "internal/gitx/**",
+  "internal/verify/**",
+]
+
+[[expansion]]
+at = "2026-09-07T17:35:36Z"
+reason = "blocking"  # prevents completing the requested task
+evidence = "verify has no -base flag and calls audit.Run and gitx.Numstat against HEAD. In a CI checkout the working tree IS HEAD, so 'git diff HEAD' is empty and the weakening check never fires — reproduced. README.md:327 recommends running verify in CI, so without -base the objective of this task is false in the deployment it was written for."
+write = [
+  "cmd/vector/**",
+]

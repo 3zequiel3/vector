@@ -503,3 +503,256 @@ func TestVerifySaysNothingAboutStaleness(t *testing.T) {
 		t.Errorf("the second run did not replace the first's snapshot: %s", st.Message())
 	}
 }
+
+// commitAll stages and commits the whole tree, so a later change has something
+// to be a change *from*. Without a commit there is no HEAD, and a diff has no
+// prior state to subtract against.
+func commitAll(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+		{"add", "-A"},
+		{"commit", "-qm", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func TestAChangeThatGutsItsOwnTestIsNotVerified(t *testing.T) {
+	// The blind spot this closes: the suite exits zero because there is
+	// nothing left in it to fail. Every command passes, the change is in
+	// scope, and the verdict would otherwise read VERIFIED.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+	if F() < 0 {
+		t.Error("F went negative")
+	}
+}
+`)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	// What a reward-hacking agent does: the assertions go, the test remains,
+	// and `go test ./...` is delighted.
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {}
+`)
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != PartiallyVerified {
+		t.Fatalf("verdict = %s (%s), want PARTIALLY_VERIFIED", rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "x_test.go") {
+		t.Errorf("reason = %q, want it to name the file it is about", rep.Reason)
+	}
+	// Lowered, not failed. Nothing here justifies a non-zero exit: the change
+	// may be a legitimate consolidation, and vector cannot tell.
+	if rep.ExitCode() != ExitOK {
+		t.Errorf("ExitCode = %d, want %d — this lowers a claim, it does not fail a build",
+			rep.ExitCode(), ExitOK)
+	}
+}
+
+func TestAChangeThatAddsTestsIsStillVerified(t *testing.T) {
+	// The ordinary, good case. A tool that complains when tests are added is
+	// a tool people turn off.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {}\n")
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+}
+`)
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestShrinkingOrdinarySourceIsNotATestFinding(t *testing.T) {
+	// Deleting production code is what most changes do. Only the files that
+	// do the judging count, or the finding means nothing.
+	root := newRepo(t)
+	mk(t, root, "x.go", "package x\n\nfunc F() int {\n\ta := 1\n\tb := 0\n\tc := 0\n\treturn a + b + c\n}\n")
+	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {\n\tif F() != 1 {\n\t\tt.Error(\"no\")\n\t}\n}\n")
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	mk(t, root, "x.go", "package x\n\nfunc F() int { return 1 }\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestWeakeningIsFoundAcrossCommitsAgainstABase(t *testing.T) {
+	// The CI case, and the one the feature was silently useless for. A fresh
+	// checkout has a working tree identical to HEAD, so every diff against
+	// HEAD is empty however many commits back the suite was gutted. Only the
+	// ref the branch came from can see it.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+	if F() < 0 {
+		t.Error("F went negative")
+	}
+}
+`)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	cmd := exec.Command("git", "branch", "base")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v: %s", err, out)
+	}
+
+	// The gutting happens in a commit, and the tree is clean afterwards.
+	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {}\n")
+	commitAll(t, root)
+
+	// Against HEAD there is nothing to see, and that is the honest answer to
+	// the question "what has this session done".
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("against HEAD: verdict = %s (%s), want VERIFIED on a clean tree",
+			rep.Verdict, rep.Reason)
+	}
+
+	// Against the branch point it is the whole change, and it is found.
+	rep, err = Run(Options{Dir: root, Base: "base", Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != PartiallyVerified {
+		t.Fatalf("against base: verdict = %s (%s), want PARTIALLY_VERIFIED",
+			rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "x_test.go") {
+		t.Errorf("reason = %q, want it to name the file", rep.Reason)
+	}
+}
+
+func TestRenamingATestIsNotWeakeningIt(t *testing.T) {
+	// A `git mv` removes nothing. Reporting it as "the suite that passed is
+	// not the suite that was there" is the false positive that gets a tool
+	// uninstalled.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+	if F() < 0 {
+		t.Error("F went negative")
+	}
+}
+`)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	cmd := exec.Command("git", "mv", "x_test.go", "renamed_test.go")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v: %s", err, out)
+	}
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED — a rename removed nothing",
+			rep.Verdict, rep.Reason)
+	}
+}
+
+func TestBothFindingsAreReportedWhenBothAreTrue(t *testing.T) {
+	// Dropping either would hide a finding behind an unrelated one.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+	if F() < 0 {
+		t.Error("F went negative")
+	}
+}
+`)
+	commitAll(t, root)
+	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {}\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != PartiallyVerified {
+		t.Fatalf("verdict = %s (%s), want PARTIALLY_VERIFIED", rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "x_test.go") {
+		t.Errorf("reason = %q, does not name the weakened suite", rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "no scope") {
+		t.Errorf("reason = %q, does not mention that no scope was declared", rep.Reason)
+	}
+}

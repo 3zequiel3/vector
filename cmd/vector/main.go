@@ -46,6 +46,8 @@ init flags:
 verify flags:
   -only <name>   run just this check (repeatable): typecheck, lint, test, build
   -task <id>     task whose scope to enforce (defaults to the active one)
+  -base <ref>    compare against this ref instead of HEAD — use it in CI, where
+                 the working tree is HEAD and every diff would otherwise be empty
   -timeout <d>   per-command timeout (default 10m)
   -json          emit vector.verify/v1 JSON
 
@@ -574,6 +576,7 @@ func runVerify(args []string) int {
 	var only patterns
 	fs.Var(&only, "only", "run just this check (repeatable)")
 	task := fs.String("task", "", "task id whose scope to enforce")
+	base := fs.String("base", "", "compare against this ref instead of HEAD")
 	dir := fs.String("C", ".", "directory to run in")
 	timeout := fs.Duration("timeout", 10*time.Minute, "per-command timeout")
 	asJSON := fs.Bool("json", false, "emit JSON")
@@ -582,7 +585,7 @@ func runVerify(args []string) int {
 	}
 
 	rep, err := verify.Run(verify.Options{
-		Dir: *dir, TaskID: *task, Only: only, Timeout: *timeout,
+		Dir: *dir, TaskID: *task, Base: *base, Only: only, Timeout: *timeout,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", err)

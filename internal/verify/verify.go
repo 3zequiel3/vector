@@ -29,6 +29,7 @@ import (
 	"github.com/3zequiel3/vector/internal/freshness"
 	"github.com/3zequiel3/vector/internal/gitx"
 	"github.com/3zequiel3/vector/internal/scope"
+	"github.com/3zequiel3/vector/internal/suite"
 )
 
 // Verdict is the full answer: where the change went, and whether it works.
@@ -92,8 +93,16 @@ func (r Report) ExitCode() int {
 
 // Options controls a run.
 type Options struct {
-	Dir     string
-	TaskID  string
+	Dir    string
+	TaskID string
+	// Base is the ref the change is measured against. Empty means HEAD,
+	// which answers "what has this session done" and is right at a terminal.
+	//
+	// It is wrong in CI, and silently so: a fresh checkout has a working tree
+	// identical to HEAD, so every diff is empty and a branch that gutted its
+	// tests three commits ago looks like no change at all. CI wants the ref it
+	// branched from.
+	Base    string
 	Only    []string      // run just these checks, by name
 	Timeout time.Duration // per command
 }
@@ -113,7 +122,7 @@ func Run(opts Options) (Report, error) {
 		opts.Timeout = 10 * time.Minute
 	}
 
-	scopeRep, err := audit.Run(audit.Options{Dir: root, TaskID: opts.TaskID})
+	scopeRep, err := audit.Run(audit.Options{Dir: root, TaskID: opts.TaskID, Base: opts.Base})
 	if err != nil {
 		return Report{}, err
 	}
@@ -153,7 +162,17 @@ func Run(opts Options) (Report, error) {
 		rep.Checks = append(rep.Checks, run(root, name, cmd, opts.Timeout))
 	}
 
-	rep.Verdict, rep.Reason = decide(scopeRep, rep.Checks)
+	// Whether this change subtracted from its own tests, measured against the
+	// same base the audit used — the two halves of a verdict must be about the
+	// same change, or the sentence they combine into is not about anything.
+	//
+	// A git failure here is not a reason to refuse a verdict: the zero Delta
+	// claims nothing, and verify falls back to the answer it gave before this
+	// existed.
+	numstat, _ := gitx.Numstat(root, opts.Base)
+	delta, weakened := suite.Weakened(numstat)
+
+	rep.Verdict, rep.Reason = decide(scopeRep, rep.Checks, delta, weakened)
 	rep.Retry = record(root, scopeRep, rep)
 	remember(root, scopeRep, rep, verified)
 	return rep, nil
@@ -222,7 +241,7 @@ func record(root string, scopeRep audit.Report, rep Report) string {
 
 // decide combines scope conformance and evidence. The ordering of these cases
 // is the policy: scope first, then failure, then absence of evidence.
-func decide(s audit.Report, checks []Check) (Verdict, string) {
+func decide(s audit.Report, checks []Check, delta suite.Delta, weakened bool) (Verdict, string) {
 	switch s.Status {
 	case audit.OutOfScope, audit.Forbidden:
 		return OutOfScope, fmt.Sprintf(
@@ -251,6 +270,20 @@ func decide(s audit.Report, checks []Check) (Verdict, string) {
 	// the rest is. Saying VERIFIED here would be the claim this tool refuses.
 	if !contains(ran, "test") {
 		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") + " — but no test command is declared"
+	}
+	// The twin of the rule above, and it is checked here because it only means
+	// anything once the test command has actually run: a passing suite that
+	// this change shrank is not evidence about this change.
+	//
+	// It sits before the no-scope case because it is the more specific finding
+	// and the more alarming one — but both can be true, and dropping either
+	// would hide a finding behind an unrelated one. The reader gets both.
+	if weakened {
+		reason := "passed: " + strings.Join(ran, ", ") + " — " + delta.Reason()
+		if s.Status == audit.NoScopeDeclared {
+			reason += "; and no scope was declared, so conformance was not checked either"
+		}
+		return PartiallyVerified, reason
 	}
 	if s.Status == audit.NoScopeDeclared {
 		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") + " — but no scope was declared, so conformance was not checked"
