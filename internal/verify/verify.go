@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/gitx"
@@ -72,6 +73,10 @@ type Report struct {
 	Reason  string       `json:"reason"`
 	Scope   audit.Report `json:"scope"`
 	Checks  []Check      `json:"checks"`
+	// Retry is set only when this task has been failing repeatedly. Whoever
+	// ran verify by hand is exactly the person who should hear that, and they
+	// were only being told through the Stop hook.
+	Retry string `json:"retry,omitempty"`
 }
 
 // ExitCode maps a verdict to a process exit code.
@@ -136,7 +141,38 @@ func Run(opts Options) (Report, error) {
 	}
 
 	rep.Verdict, rep.Reason = decide(scopeRep, rep.Checks)
+	rep.Retry = record(root, scopeRep, rep)
 	return rep, nil
+}
+
+// record files this run against the task, so a later turn can tell a task that
+// is converging from one that is retrying in circles.
+//
+// It runs after the verdict and cannot change it. A run that is not attached
+// to a task records nothing — there would be nothing to count it against — and
+// every failure to write is swallowed: the verdict is the answer verify owes
+// its caller, and losing a tally must never cost them that.
+//
+// "Passed" here is exactly what the exit code says, so the log and the process
+// can never disagree about whether a run went well.
+// It returns the retry signal for this task, judged after recording so the
+// count includes the run being reported.
+func record(root string, scopeRep audit.Report, rep Report) string {
+	if scopeRep.TaskID == "" {
+		return ""
+	}
+	// The same base audit just compared against, so the size recorded beside a
+	// verdict is the size that verdict was about.
+	files, lines := attempt.Volume(root, scopeRep.Base)
+	_ = attempt.Record(root, attempt.Outcome{
+		At:      time.Now(),
+		Task:    scopeRep.TaskID,
+		Verdict: string(rep.Verdict),
+		Files:   files,
+		Lines:   lines,
+		Passed:  rep.ExitCode() == ExitOK,
+	})
+	return attempt.Judge(root, scopeRep.TaskID).Message()
 }
 
 // decide combines scope conformance and evidence. The ordering of these cases
@@ -254,6 +290,13 @@ func (r Report) WriteText(w io.Writer) error {
 	}
 	if out := failureOutput(r.Checks); out != "" {
 		fmt.Fprintf(&b, "\n%s\n", indent(out))
+	}
+
+	// The retry signal goes last: it is context about the shape of the work,
+	// not a result of this run, and putting it above the findings would push
+	// the thing the reader asked for down the page.
+	if r.Retry != "" {
+		fmt.Fprintf(&b, "\n%s\n", r.Retry)
 	}
 
 	if len(r.Scope.Findings) > 0 {

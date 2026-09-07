@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-100-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-128-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -292,6 +292,21 @@ Dos reglas deciden el veredicto:
 
 Los checks corren de más barato a más caro —typecheck, lint, test, build— porque un error de tipos explica los fallos de test que vendrían después. Cada uno tiene timeout, así una suite colgada falla ruidosamente en vez de colgarse.
 
+Cuando una tarea falla una y otra vez, `verify` y el hook `Stop` lo dicen:
+
+```
+vector: 4 failed verifies in a row on date-filter, with no passing run in
+between. The diff grew from 99 to 812 changed lines across them. Nothing is
+blocked — vector cannot tell a productive attempt from an unproductive one.
+Consider stopping and asking a human what to change.
+```
+
+Tres fallos consecutivos es el umbral: uno es trabajo, dos es la corrección
+ordinaria en la que aterriza casi cualquier arreglo, y tres es el primero que el
+patrón de dos intentos no explica. Una corrida que pasa corta la racha. Nunca se
+bloquea nada — es una señal de que puede haber un loop, y una herramienta que
+frena trabajo legítimo por una heurística se desinstala.
+
 `verify` no lo corre ningún hook. Correr la suite de tests al final de cada turno costaría más que el desperdicio que evita; `Stop` corre el audit barato y te deja a vos o a CI la pregunta cara.
 
 ## Códigos de salida
@@ -307,11 +322,11 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 100 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 128 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
-Sigue abierto: los adapters de hooks de Codex, Cursor y Gemini; la caducidad del veredicto, para que un verify que pasó expire cuando el código sobre el que afirmaba se mueve; y un presupuesto de intentos, para que una tarea que gira contra una pared lo diga.
+Sigue abierto: los adapters de hooks de Codex, Cursor y Gemini, y la caducidad del veredicto — un verify que pasó debería expirar cuando el código sobre el que afirmaba se mueve.
 
 ---
 
@@ -325,7 +340,7 @@ realmente en cada agente. Está en inglés, como el resto de los artefactos téc
 ## Desarrollo
 
 ```bash
-go test ./...        # 100 tests
+go test ./...        # 128 tests
 go vet ./...
 gofmt -l .
 ```

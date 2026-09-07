@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 )
 
@@ -169,6 +170,101 @@ func TestTimeoutIsReportedAsFailureNotAHang(t *testing.T) {
 	}
 }
 
+// newScopedRepo is newRepo with a declared boundary wide enough that the run
+// stays inside it, which is what gives the run a task id to be counted under.
+func newScopedRepo(t *testing.T) string {
+	t.Helper()
+	root := newRepo(t)
+	mk(t, root, ".vector/policy.toml",
+		"[scope]\nalways_forbidden = []\n\n[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml",
+		"objective = \"whatever it takes\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	return root
+}
+
+func TestVerifyRecordsTheOutcomeAgainstTheTask(t *testing.T) {
+	// vector does not run the agent, so the only attempts it can count are the
+	// verify runs it performed itself. If the run is not written down, there is
+	// nothing for a later turn to notice a loop in.
+	root := newScopedRepo(t)
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := attempt.History(root, "task")
+	if len(h) != 1 {
+		t.Fatalf("history = %d records, want 1", len(h))
+	}
+	got := h[0]
+	if got.Verdict != string(rep.Verdict) {
+		t.Errorf("recorded verdict = %q, want %q", got.Verdict, rep.Verdict)
+	}
+	// Recording a size of zero would make every diff look like it never grew.
+	if got.Files == 0 || got.Lines == 0 {
+		t.Errorf("recorded %d files / %d lines, want the change measured", got.Files, got.Lines)
+	}
+	// "Passed" and the exit code must never disagree about the same run.
+	if got.Passed != (rep.ExitCode() == ExitOK) {
+		t.Errorf("recorded passed = %v, exit code = %d", got.Passed, rep.ExitCode())
+	}
+}
+
+func TestARunWithNoTaskRecordsNothing(t *testing.T) {
+	// Without a declared scope there is no task for an attempt to belong to,
+	// and inventing one would pool unrelated work under a single count.
+	root := newRepo(t)
+	if _, err := Run(Options{Dir: root, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(attempt.Path(root)); !os.IsNotExist(err) {
+		t.Errorf("an attempt log exists (%v), want none without a task", err)
+	}
+}
+
+func TestTheRetryCountNeverChangesTheVerdictOrTheExitCode(t *testing.T) {
+	// This is the whole constraint. vector cannot tell a productive fourth
+	// attempt from an unproductive one, so a long history of failures must
+	// leave the verdict of the next run exactly where it would have been.
+	root := newScopedRepo(t)
+	for i := 1; i <= 6; i++ {
+		if err := attempt.Record(root, attempt.Outcome{
+			At:   time.Date(2026, 1, 1, 0, i, 0, 0, time.UTC),
+			Task: "task", Verdict: string(Failed), Files: 9, Lines: 200 * i,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED despite the history", rep.Verdict, rep.Reason)
+	}
+	if rep.ExitCode() != ExitOK {
+		t.Errorf("ExitCode = %d, want %d; the retry signal must not fail a run",
+			rep.ExitCode(), ExitOK)
+	}
+}
+
+func TestAnUnwritableAttemptLogDoesNotFailVerify(t *testing.T) {
+	// Bookkeeping is not the answer verify owes its caller. A repository where
+	// the log cannot be written still gets its verdict.
+	root := newScopedRepo(t)
+	if err := os.MkdirAll(attempt.Path(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("Run failed over a log it could not write: %v", err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
 func TestTailKeepsTheEnd(t *testing.T) {
 	// The failure is at the end of a test run, and an uncapped dump would
 	// flood whatever reads this.
@@ -182,5 +278,56 @@ func TestTailKeepsTheEnd(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "…") {
 		t.Error("truncation was not marked")
+	}
+}
+
+func TestRepeatedFailuresReachWhoeverRanVerify(t *testing.T) {
+	// The retry signal was only reaching the Stop hook, which means a person
+	// running verify in a terminal — exactly the person deciding whether to try
+	// again — never heard it.
+	root := newRepo(t)
+	mk(t, root, ".vector/policy.toml",
+		"[scope]\nalways_forbidden = []\n\n[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"fix it\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	mk(t, root, "x.go", "package x\n\nfunc F() int { return \"broken\" }\n")
+
+	var rep Report
+	for i := 0; i < 3; i++ {
+		var err error
+		rep, err = Run(Options{Dir: root, Timeout: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Verdict != Failed {
+			t.Fatalf("run %d: verdict = %s (%s), want FAILED", i, rep.Verdict, rep.Reason)
+		}
+	}
+
+	if rep.Retry == "" {
+		t.Fatal("three consecutive failures produced no retry signal")
+	}
+	if !strings.Contains(rep.Retry, "task") {
+		t.Errorf("retry = %q, want the task named", rep.Retry)
+	}
+	// The signal must not turn into a verdict of its own: vector cannot tell a
+	// productive fourth attempt from an unproductive one, and halting real work
+	// on a heuristic is how a tool gets uninstalled.
+	if rep.ExitCode() != ExitProblem {
+		t.Errorf("ExitCode = %d, want the failing checks to decide it, not the retry signal", rep.ExitCode())
+	}
+}
+
+func TestASinglePassingRunCarriesNoRetrySignal(t *testing.T) {
+	root := newRepo(t)
+	mk(t, root, ".vector/scope/task.toml", "objective = \"ok\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Retry != "" {
+		t.Errorf("retry = %q, want none on a first run", rep.Retry)
 	}
 }

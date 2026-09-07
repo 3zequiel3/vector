@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/3zequiel3/vector/internal/attempt"
 	"github.com/3zequiel3/vector/internal/audit"
 	"github.com/3zequiel3/vector/internal/detect"
 	"github.com/3zequiel3/vector/internal/gitx"
@@ -346,15 +347,40 @@ func sessionStart(root string) *hookOutput {
 }
 
 // stop reports scope conformance as the turn ends, so the result is seen
-// without anyone remembering to ask for it.
+// without anyone remembering to ask for it, and reports a retry loop when the
+// recorded history supports calling it one.
+//
+// The two are independent: a task can be circling inside a scope it never
+// left, and a single out-of-scope write on a first attempt is not a loop. When
+// both are true the reader gets both, because dropping either would hide a
+// finding behind an unrelated one.
 func stop(root string) *hookOutput {
+	var parts []string
+	if s := scopeReport(root); s != "" {
+		parts = append(parts, s)
+	}
+	// This costs two small file reads and no git call: verify already paid for
+	// the measurement, and the Stop hook runs once per turn.
+	if m := attempt.Judge(root, scope.Current(root)).Message(); m != "" {
+		parts = append(parts, m)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	// Reported, never decided. The Stop hook returns context only; the retry
+	// signal is a suspicion vector cannot confirm, and blocking on it would
+	// stop a fourth attempt that was about to work.
+	return &hookOutput{HookEventName: "Stop", AdditionalContext: strings.Join(parts, " ")}
+}
+
+func scopeReport(root string) string {
 	rep, err := audit.Run(audit.Options{Dir: root})
 	if err != nil {
-		return nil
+		return ""
 	}
 	switch rep.Status {
 	case audit.InScope, audit.NoChanges, audit.NoScopeDeclared:
-		return nil
+		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "vector: %s.", rep.Status)
@@ -362,5 +388,5 @@ func stop(root string) *hookOutput {
 		fmt.Fprintf(&b, " %s (%s);", f.Path, f.Kind)
 	}
 	b.WriteString(" Run `vector audit` for the full report.")
-	return &hookOutput{HookEventName: "Stop", AdditionalContext: b.String()}
+	return b.String()
 }

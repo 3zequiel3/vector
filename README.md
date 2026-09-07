@@ -6,7 +6,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-100-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-128-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -287,6 +287,21 @@ Two rules decide the verdict:
 
 Checks run cheapest first — typecheck, lint, test, build — because a type error explains the test failures that follow. Each has a timeout, so a hung suite fails loudly instead of hanging.
 
+When a task keeps failing, `verify` and the `Stop` hook say so:
+
+```
+vector: 4 failed verifies in a row on date-filter, with no passing run in
+between. The diff grew from 99 to 812 changed lines across them. Nothing is
+blocked — vector cannot tell a productive attempt from an unproductive one.
+Consider stopping and asking a human what to change.
+```
+
+Three consecutive failures is the threshold: one is work, two is the ordinary
+correction most fixes land on, and three is the first that the two-try pattern
+does not explain. A passing run ends the streak. Nothing is ever blocked on this
+— it is a signal that a loop may be happening, and a tool that halts legitimate
+work on a heuristic gets uninstalled.
+
 `verify` is never run by a hook. Running a test suite at the end of every turn would cost more than the waste it prevents; `Stop` runs the cheap scope audit and leaves the expensive question to you or to CI.
 
 ## Exit codes
@@ -302,11 +317,11 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 100 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 128 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
-Still open: the Codex, Cursor and Gemini hook adapters; verdict staleness, so a passing verify expires when the code it was about moves; and an attempt budget, so a task looping against a wall says so.
+Still open: the Codex, Cursor and Gemini hook adapters, and verdict staleness — a passing verify should expire when the code it was about moves.
 
 ---
 
@@ -320,7 +335,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 100 tests
+go test ./...        # 128 tests
 go vet ./...
 gofmt -l .
 ```

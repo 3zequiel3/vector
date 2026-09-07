@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/3zequiel3/vector/internal/attempt"
 )
 
 func TestWriteTargetsFindsRedirections(t *testing.T) {
@@ -384,6 +387,131 @@ func TestUnwritableNudgeStateStaysSilentRatherThanLooping(t *testing.T) {
 		if out.Len() != 0 {
 			t.Errorf("write %d: output = %q, want silence", i, out.String())
 		}
+	}
+}
+
+// retryRepo is a repository as `vector init` leaves it: the per-developer
+// state under .vector/ is gitignored, so the attempt log is not itself a
+// change the audit has to explain. Without that line in setup's localState,
+// every audit after the first verify would report the log as a forbidden path.
+func retryRepo(t *testing.T) string {
+	t.Helper()
+	root := newRepo(t, []string{"src/**"})
+	if err := os.WriteFile(filepath.Join(root, ".vector", ".gitignore"),
+		[]byte("current\nnudged\nattempts\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// commitAll leaves the working tree clean, so an audit has nothing to report
+// and the Stop hook's only remaining voice is the retry signal.
+func commitAll(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-qm", "base"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+// failVerify records n failed verify runs of the active task, the way verify
+// itself would have.
+func failVerify(t *testing.T, root string, n int, lines ...int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := attempt.Record(root, attempt.Outcome{
+			At:      time.Date(2026, 1, 1, 0, i, 0, 0, time.UTC),
+			Task:    "task",
+			Verdict: "FAILED",
+			Files:   4,
+			Lines:   lines[i],
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestStopIsSilentBelowTheRetryThreshold(t *testing.T) {
+	// Two failed verifies is ordinary work. A Stop hook that speaks up on
+	// every turn is one people stop reading.
+	root := retryRepo(t)
+	commitAll(t, root)
+	failVerify(t, root, 2, 120, 300)
+
+	if got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`); got != (hookOutput{}) {
+		t.Errorf("got %+v, want silence after two failures", got)
+	}
+}
+
+func TestStopReportsARetryLoopAndBlocksNothing(t *testing.T) {
+	// The message has to be actionable on its own: how many attempts, how far
+	// the diff moved, and what to do next. And it stays context — a suspicion
+	// vector cannot confirm must never stop a fourth attempt that would work.
+	root := retryRepo(t)
+	commitAll(t, root)
+	failVerify(t, root, 4, 120, 300, 560, 812)
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if got.PermissionDecision != "" {
+		t.Fatalf("decision = %q, want none; the retry signal decides nothing", got.PermissionDecision)
+	}
+	for _, want := range []string{"4 failed verifies", "task", "120", "812", "Nothing is blocked"} {
+		if !strings.Contains(got.AdditionalContext, want) {
+			t.Errorf("context = %q, want it to name %q", got.AdditionalContext, want)
+		}
+	}
+}
+
+func TestStopReportsScopeDriftAndTheRetryLoopTogether(t *testing.T) {
+	// A task can be circling inside a boundary it also left. Dropping either
+	// finding would hide it behind the other.
+	root := retryRepo(t)
+	mk := filepath.Join(root, "drift.ts")
+	if err := os.WriteFile(mk, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failVerify(t, root, 3, 120, 300, 812)
+
+	got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if !strings.Contains(got.AdditionalContext, "vector audit") {
+		t.Errorf("context = %q, want the scope finding kept", got.AdditionalContext)
+	}
+	if !strings.Contains(got.AdditionalContext, "failed verifies") {
+		t.Errorf("context = %q, want the retry finding kept", got.AdditionalContext)
+	}
+}
+
+func TestStopWithNoHistorySaysNothingNew(t *testing.T) {
+	// A repository that has never run verify must behave exactly as it did
+	// before any of this existed.
+	root := retryRepo(t)
+	commitAll(t, root)
+	if got := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`); got != (hookOutput{}) {
+		t.Errorf("got %+v, want silence with no recorded history", got)
+	}
+}
+
+func TestStopSurvivesACorruptAttemptLog(t *testing.T) {
+	// Unreadable bookkeeping means "no history". Erroring out of the Stop hook
+	// over it would cost the user the end of their turn.
+	root := retryRepo(t)
+	commitAll(t, root)
+	if err := os.WriteFile(filepath.Join(root, ".vector", "attempts"),
+		[]byte("\x00\x01 not a record\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run("stop", strings.NewReader(`{"cwd":"`+root+`"}`), &out, root); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("output = %q, want silence", out.String())
 	}
 }
 
