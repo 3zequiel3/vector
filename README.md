@@ -9,7 +9,7 @@ vector notices, tells you, and — where it can — stops it first.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-128-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-162-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -259,7 +259,27 @@ Two rules decide the verdict:
 
 Checks run cheapest first — typecheck, lint, test, build — because a type error explains the test failures that follow. Each has a timeout, so a hung suite fails loudly instead of hanging.
 
-When a task keeps failing, `verify` and the `Stop` hook say so:
+### When a verdict stops being true
+
+`VERIFIED` is a claim about a tree. Keep editing and it stops being one, so the
+`Stop` hook says so:
+
+```
+vector: the VERIFIED verdict for date-filter is stale — src/dashboard/Filter.tsx
+changed since it was reached. What is on disk now is UNVERIFIED, not failed:
+nothing is blocked and no exit code changed.
+```
+
+Stale is not failed. The vocabulary already had a word for unknown and this is
+it. Only passing verdicts are reported stale — a stale `FAILED` misleads nobody,
+and the editing that made it stale is the response it was asking for.
+
+The identifier is git's own blob hash, so nothing new is invented and no other
+tool is required.
+
+### When a task keeps failing
+
+`verify` and the `Stop` hook say so:
 
 ```
 vector: 4 failed verifies in a row on date-filter, with no passing run in
@@ -356,11 +376,13 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 128 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 162 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
-Still open: the Codex, Cursor and Gemini hook adapters, and verdict staleness — a passing verify should expire when the code it was about moves.
+Still open: the Codex, Cursor and Gemini hook adapters. They expose the same primitive under different event names, so that is translation rather than new architecture — but until it is written, `doctor` reports T2 on those machines and means it.
+
+The number that would justify all of this still does not exist: nobody has measured how often an agent actually goes out of scope on these repositories. `vector audit` is the instrument, and running it for a week costs nothing.
 
 ---
 
@@ -374,7 +396,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 128 tests
+go test ./...        # 162 tests
 go vet ./...
 gofmt -l .
 ```

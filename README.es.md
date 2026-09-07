@@ -9,7 +9,7 @@ vector lo nota, te lo dice y —donde puede— lo frena antes.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-128-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-162-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -265,7 +265,27 @@ Dos reglas deciden el veredicto:
 
 Los checks corren de más barato a más caro —typecheck, lint, test, build— porque un error de tipos explica los fallos de test que vendrían después. Cada uno tiene timeout, así una suite colgada falla ruidosamente en vez de colgarse.
 
-Cuando una tarea falla una y otra vez, `verify` y el hook `Stop` lo dicen:
+### Cuando un veredicto deja de ser cierto
+
+`VERIFIED` es una afirmación sobre un árbol. Seguís editando y deja de serlo, así
+que el hook `Stop` lo dice:
+
+```
+vector: the VERIFIED verdict for date-filter is stale — src/dashboard/Filter.tsx
+changed since it was reached. What is on disk now is UNVERIFIED, not failed:
+nothing is blocked and no exit code changed.
+```
+
+Stale no es failed. El vocabulario ya tenía una palabra para *desconocido* y es
+esa. Solo se reportan stale los veredictos que pasaron — un `FAILED` viejo no
+engaña a nadie, y la edición que lo volvió viejo **es** la respuesta que pedía.
+
+El identificador es el blob hash del propio git, así que no se inventa nada
+nuevo ni hace falta ninguna otra herramienta.
+
+### Cuando una tarea falla una y otra vez
+
+`verify` y el hook `Stop` lo dicen:
 
 ```
 vector: 4 failed verifies in a row on date-filter, with no passing run in
@@ -362,11 +382,13 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 128 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 162 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
-Sigue abierto: los adapters de hooks de Codex, Cursor y Gemini, y la caducidad del veredicto — un verify que pasó debería expirar cuando el código sobre el que afirmaba se mueve.
+Sigue abierto: los adapters de hooks de Codex, Cursor y Gemini. Exponen el mismo primitivo con otros nombres de evento, así que es traducción y no arquitectura nueva — pero hasta que estén escritos, `doctor` reporta T2 en esas máquinas y lo dice en serio.
+
+El número que justificaría todo esto sigue sin existir: nadie midió cuán seguido un agente se va realmente de alcance en estos repositorios. `vector audit` es el instrumento, y correrlo una semana no cuesta nada.
 
 ---
 
@@ -380,7 +402,7 @@ realmente en cada agente. Está en inglés, como el resto de los artefactos téc
 ## Desarrollo
 
 ```bash
-go test ./...        # 128 tests
+go test ./...        # 162 tests
 go vet ./...
 gofmt -l .
 ```
