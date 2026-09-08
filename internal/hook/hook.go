@@ -39,6 +39,10 @@ type Event struct {
 	SessionID string          `json:"session_id"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// StopHookActive is set by the agent when this Stop event is itself the
+	// result of a previous Stop hook keeping the turn alive. vector reads it so
+	// that a standing condition is reported once rather than on every re-entry.
+	StopHookActive bool `json:"stop_hook_active"`
 }
 
 type toolInput struct {
@@ -85,7 +89,7 @@ func Run(event string, in io.Reader, out io.Writer, dir string) error {
 	case "session-start":
 		resp.Hook = sessionStart(root)
 	case "stop":
-		resp.Hook = stop(root)
+		resp.Hook = stop(root, e)
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
@@ -666,7 +670,23 @@ func ago(t time.Time) string {
 // comes before the signal that only suspects something. The retry judgement is
 // last: it is the softest of the three and it closes by telling the reader to
 // consider stopping, which is not a sentence to have findings after.
-func stop(root string) *hookOutput {
+func stop(root string, e Event) *hookOutput {
+	// Everything below reports repository state, not an event: the same drift
+	// produces the same message every turn. Returning context from a Stop hook
+	// is how this agent is told the turn is not over, so a standing condition
+	// repeated automatically becomes a loop the hook cannot end and the user
+	// cannot answer — it runs until the agent hits its consecutive-block
+	// ceiling and overrides the hook by force. The agent marks the re-entry, so
+	// honour it and let the turn close: the condition is already on screen, and
+	// a tenth identical report adds nothing a human has not read.
+	//
+	// This is narrower than it looks. It suppresses a repeat within one turn,
+	// not the report itself; the next turn re-audits from scratch, so drift
+	// that still matters is still announced.
+	if e.StopHookActive {
+		return nil
+	}
+
 	// One audit, reused. It answers both "did this change stay in bounds" and
 	// "which files are in bounds now", and the Stop hook has no business paying
 	// git twice for the same question.

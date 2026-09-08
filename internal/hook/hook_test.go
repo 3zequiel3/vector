@@ -500,6 +500,31 @@ func TestStopWithNoHistorySaysNothingNew(t *testing.T) {
 	}
 }
 
+func TestStopSaysNothingOnItsOwnReEntry(t *testing.T) {
+	// The Stop hook reports repository state, and state does not change just
+	// because the report was read. Returning context is how the agent is told
+	// the turn is not over, so repeating a standing finding on re-entry is a
+	// loop nobody in it can break: the hook cannot stop reporting and the user
+	// cannot make the drift go away mid-turn. It runs until the agent hits its
+	// consecutive-block ceiling and overrides the hook by force, which is the
+	// finding arriving as a malfunction instead of as a sentence. The agent
+	// marks the re-entry, and honouring it is what lets the turn close.
+	root := retryRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "drift.ts"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first := runEvent(t, root, "stop", `{"cwd":"`+root+`"}`)
+	if !strings.Contains(first.AdditionalContext, "vector audit") {
+		t.Fatalf("context = %q, want the drift reported the first time", first.AdditionalContext)
+	}
+
+	again := runEvent(t, root, "stop", `{"cwd":"`+root+`","stop_hook_active":true}`)
+	if again != (hookOutput{}) {
+		t.Errorf("got %+v, want silence on re-entry so the turn can end", again)
+	}
+}
+
 func TestStopSurvivesACorruptAttemptLog(t *testing.T) {
 	// Unreadable bookkeeping means "no history". Erroring out of the Stop hook
 	// over it would cost the user the end of their turn.
