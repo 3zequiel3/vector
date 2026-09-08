@@ -288,6 +288,26 @@ func decide(s audit.Report, checks []Check, delta suite.Delta, weakened bool) (V
 	if s.Status == audit.NoScopeDeclared {
 		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") + " — but no scope was declared, so conformance was not checked"
 	}
+	// A dangerous path the boundary allowed without being about it was never
+	// declared; it was only never excluded, and those are not the same
+	// authorization.
+	//
+	// This is the one shape of drift the audit cannot see, because nothing
+	// went out of bounds. A task whose objective was to move a button, under a
+	// boundary of "src/**", reports IN_SCOPE while its diff drops a table: the
+	// boundary did not fail, it simply never said anything about migrations.
+	// Vector cannot know whether that migration belonged to the task, and does
+	// not have to. It can say that no pattern here was about it, which is a
+	// fact about the declaration rather than a guess about intent.
+	if len(s.Undeclared) > 0 {
+		paths := make([]string, 0, len(s.Undeclared))
+		for _, f := range s.Undeclared {
+			paths = append(paths, f.Path)
+		}
+		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") +
+			" — but this touched " + strings.Join(paths, ", ") +
+			", which no declared pattern was about"
+	}
 	return Verified, "in scope; passed: " + strings.Join(ran, ", ")
 }
 

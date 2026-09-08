@@ -65,6 +65,16 @@ type Report struct {
 	Bookkeeping []string  `json:"bookkeeping,omitempty"`
 	InScope     []string  `json:"in_scope"`
 	Findings    []Finding `json:"findings"`
+	// HighRisk are the changed paths the policy calls dangerous, whatever the
+	// status ended up being. They are not findings — a migration inside the
+	// boundary is authorized work — but nobody edits one by accident, and a
+	// report that mentions them only when something else went wrong is a
+	// report that stays silent exactly when it should not.
+	HighRisk []string `json:"high_risk,omitempty"`
+	// Undeclared are the high-risk paths the boundary allowed without ever
+	// naming — swept up by a pattern that was about something else. They are
+	// a subset of HighRisk, and the reason a verdict cannot read VERIFIED.
+	Undeclared []Finding `json:"undeclared_risk,omitempty"`
 }
 
 func (r Report) count(kind string) int {
@@ -160,6 +170,13 @@ func Run(opts Options) (Report, error) {
 				worst, pattern, reached = d, pat, t
 			}
 		}
+		if _, risky := rules.Risky(reached); risky {
+			rep.HighRisk = append(rep.HighRisk, reached)
+			if risk, undeclared := rules.Undeclared(reached); undeclared {
+				rep.Undeclared = append(rep.Undeclared,
+					Finding{Path: reached, Kind: "undeclared_risk", Pattern: risk})
+			}
+		}
 		switch worst {
 		case scope.Forbidden:
 			rep.Findings = append(rep.Findings, Finding{Path: reached, Kind: "forbidden", Pattern: pattern})
@@ -240,6 +257,20 @@ func (r Report) WriteText(w io.Writer) error {
 		} else {
 			fmt.Fprintf(&b, "  %-14s %s\n", f.Kind, f.Path)
 		}
+	}
+	// Named whatever the status is, including IN SCOPE. These are authorized
+	// edits and still the ones worth a second look, and a line that appears
+	// only when something already went wrong would be missing on every run
+	// where it mattered most.
+	for _, p := range r.HighRisk {
+		fmt.Fprintf(&b, "  %-14s %s\n", "high risk", p)
+	}
+	// A path the boundary allowed without being about it. IN SCOPE is still
+	// true and still much weaker than it looks: nothing here was declared, it
+	// was only never excluded.
+	for _, f := range r.Undeclared {
+		fmt.Fprintf(&b, "  %-14s %s  (allowed by a pattern that is not about %s)\n",
+			"undeclared", f.Path, f.Pattern)
 	}
 	if r.Status == Forbidden || r.Status == OutOfScope {
 		if r.Enforcement == "advisory" {

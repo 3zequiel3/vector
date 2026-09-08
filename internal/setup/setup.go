@@ -179,7 +179,11 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 	b.WriteString("# Always denied, even under a wide scope: an agent with write access\n")
 	b.WriteString("# to the configuration that constrains it can weaken that constraint.\n")
 	kv(&b, "always_forbidden", p.Scope.AlwaysForbidden)
-	fmt.Fprintf(&b, "expansion_requires_evidence = %t\n", p.Scope.ExpansionRequiresEvidence)
+	b.WriteString("\n# Written deliberately or not at all. Never denied — a migration and a\n")
+	b.WriteString("# workflow are things a change legitimately edits. They are named in every\n")
+	b.WriteString("# report, and a boundary of \"**\" does not count as having declared them.\n")
+	kv(&b, "high_risk", p.Scope.HighRisk)
+	fmt.Fprintf(&b, "\nexpansion_requires_evidence = %t\n", p.Scope.ExpansionRequiresEvidence)
 
 	b.WriteString("\n[mode]\n")
 	b.WriteString("# advisory: report and continue. strict: a violation is a hard failure.\n")

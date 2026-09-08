@@ -756,3 +756,74 @@ func TestF(t *testing.T) {
 		t.Errorf("reason = %q, does not mention that no scope was declared", rep.Reason)
 	}
 }
+
+func TestABoundaryThatIsNotAboutMigrationsDoesNotAuthoriseOne(t *testing.T) {
+	// The hole this closes. The objective was to move a button; the diff drops
+	// a table. The boundary did not fail — "**" makes every path in scope by
+	// construction, so the audit reads IN_SCOPE and says nothing at all.
+	root := newRepo(t)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"tweak a button\"\nwrite = [\"src/**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+	mk(t, root, "src/migrations/0003_drop.sql", "DROP TABLE customers;\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != PartiallyVerified {
+		t.Fatalf("verdict = %s (%s), want PARTIALLY_VERIFIED", rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "src/migrations/0003_drop.sql") {
+		t.Errorf("reason = %q, want it to name the path", rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "no declared pattern was about") {
+		t.Errorf("reason = %q, want it to say the declaration was not about it", rep.Reason)
+	}
+	// Reported, never blocked. The migration may well belong to the task, and
+	// vector has no way to know — it says only that nothing declared it.
+	if rep.ExitCode() != ExitOK {
+		t.Errorf("ExitCode = %d, want %d", rep.ExitCode(), ExitOK)
+	}
+}
+
+func TestANamedBoundaryAuthorisesAMigration(t *testing.T) {
+	// The exemption that keeps this from being noise. A boundary that names
+	// where the work lives is a claim someone made and can be held to; only
+	// the refusal to make one is the finding.
+	root := newRepo(t)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml",
+		"objective = \"add the drop-customers migration\"\nwrite = [\"migrations/**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+	mk(t, root, "migrations/0003_drop.sql", "DROP TABLE customers;\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestABroadBoundaryOverOrdinarySourceIsStillVerified(t *testing.T) {
+	// A repository-wide task is a legitimate declaration. "**" only becomes a
+	// finding when it is the thing that swept up something dangerous.
+	root := newRepo(t)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"rename a symbol everywhere\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+	mk(t, root, "x.go", "package x\n\nfunc F() int { return 2 }\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != Verified {
+		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}

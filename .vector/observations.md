@@ -29,3 +29,12 @@ Corrects OBS-001, which stated the severity backwards, and records that it is no
 - action: defer
 
 sessionStart appends a sentence period directly after the joined verification commands, so a command ending in ./... renders as 'go vet ./....' — an agent copying that literally runs a command with a fourth dot. Pre-existing (hook.go, the Verification line), not introduced by session-recovery, and outside this task's boundary.
+
+## OBS-004
+- date: 2026-09-07
+- task: risk-paths
+- category: security
+- severity: medium
+- action: defer
+
+Private key material (*.pem, *.p12, *.pfx) is high_risk but not always_forbidden, so it is reported after the fact and never denied — while .env and .env.* ARE forbidden and denied unconditionally in every mode. A private key is arguably the more dangerous of the two: .env compromises a process, a host key compromises a host. Moving them to always_forbidden would deny writes in every mode, which breaks the legitimate case of generating test fixtures — that case already has an escape hatch in 'scope expand -reason security'. Raised by a risk review of the high_risk feature; left as the user's product decision rather than changed unilaterally, because it changes what vector blocks.

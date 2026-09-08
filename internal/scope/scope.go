@@ -49,6 +49,15 @@ type Policy struct {
 	Scope struct {
 		AlwaysForbidden           []string `toml:"always_forbidden"`
 		ExpansionRequiresEvidence bool     `toml:"expansion_requires_evidence"`
+		// HighRisk names paths that are written deliberately or not at all.
+		//
+		// It is not a second forbidden list. A migration, a workflow, an auth
+		// module and a terraform plan are all things a change legitimately
+		// edits; what separates them from a component is that nobody edits one
+		// by accident, and the cost of finding out later is not the same. So
+		// these are never denied — they are named, every time, and they cannot
+		// be swept up by a boundary that authorized everything.
+		HighRisk []string `toml:"high_risk"`
 	} `toml:"scope"`
 	Mode struct {
 		Enforcement string `toml:"enforcement"` // "advisory" | "strict"
@@ -105,6 +114,32 @@ func DefaultPolicy() Policy {
 		".cursor/hooks.json",
 		".env",
 		".env.*",
+	}
+	// Deliberately short, and shorter than the obvious version. Every entry is
+	// a path whose name says what it does in more than one ecosystem, and a
+	// list that tries to be exhaustive goes stale and starts being wrong out
+	// loud. A project adds its own; this is the set nobody would argue with.
+	//
+	// Three obvious candidates are deliberately absent, because each one fires
+	// on ordinary work and a rule that cries wolf on Tuesday is off by Friday.
+	// "**/auth/**" is the canonical example in every write-up of this failure
+	// and also matches src/auth/LoginButton.tsx, which is a front-end folder,
+	// not a security boundary. "**/migrate/**" matches any Go package named
+	// migrate and every vendored copy of golang-migrate. "**/*.key" matches
+	// Keynote decks and licence placeholders, since an extension is not
+	// content. A project that means them can add them in one line.
+	p.Scope.HighRisk = []string{
+		"**/migrations/**",
+		".github/workflows/**",
+		".gitlab-ci.yml",
+		"Jenkinsfile",
+		"**/*.tf",
+		"**/*.tfvars",
+		"Dockerfile",
+		"**/docker-compose*.yml",
+		"**/*.pem",
+		"**/*.p12",
+		"**/*.pfx",
 	}
 	p.Scope.ExpansionRequiresEvidence = true
 	p.Mode.Enforcement = "advisory"
@@ -165,6 +200,9 @@ type Ruleset struct {
 	Objective  string
 	TaskID     string
 	Expansions int // how many times this boundary was widened
+	// HighRisk are the policy's dangerous-path patterns, carried here so a
+	// decision and its severity are answered from the same place.
+	HighRisk []string
 }
 
 // BuildRuleset merges a policy and an optional scope into a decidable ruleset.
@@ -179,7 +217,54 @@ func BuildRuleset(p Policy, s *Scope) Ruleset {
 	r.Write = append(r.Write, s.EffectiveWrite()...)
 	r.Forbidden = append(r.Forbidden, s.Forbidden...)
 	r.Expansions = len(s.Expansions)
+	r.HighRisk = append([]string{}, p.Scope.HighRisk...)
 	return r
+}
+
+// Risky reports whether a path is one the policy calls high risk, and the
+// pattern that says so.
+//
+// It is independent of Decide. A path can be perfectly in scope and still be a
+// migration, and those are different facts about it — collapsing them would
+// force a tool that wants to say "allowed, and worth looking at" to pick one.
+func (r Ruleset) Risky(rel string) (string, bool) {
+	return matchAny(r.HighRisk, rel)
+}
+
+// Undeclared returns the high-risk paths among rel that the boundary allows
+// without ever having named, and for each, the pattern that swept it up.
+//
+// The rule is one line: the pattern that authorizes a dangerous path must
+// itself be a dangerous path. "migrations/**" is matched by the risk pattern
+// "**/migrations/**" and so declares a migration; "src/**" is not, and so does
+// not, however many migrations happen to live under src.
+//
+// The first version of this asked a different question — whether the boundary
+// was literally "**" — and it was worth almost nothing. "**/**" matches
+// everything too and was not on the list; enumerating the top-level
+// directories reaches the same coverage with no catch-all in sight; and most
+// repositories put the whole application under one src/, so the check was
+// really "did you type two asterisks". Asking about the pattern's own risk
+// instead has the property the other one lacked: the only way to evade it is
+// to declare "migrations/**", which is the declaration that was wanted.
+//
+// Nothing here denies. It reports which dangerous paths were covered by
+// something that was not about them.
+func (r Ruleset) Undeclared(rel string) (string, bool) {
+	risk, risky := r.Risky(rel)
+	if !risky || !r.Declared {
+		return "", false
+	}
+	for _, w := range r.Write {
+		if _, ok := matchAny([]string{w}, rel); !ok {
+			continue
+		}
+		// The pattern let it through. Does the pattern say so?
+		if _, named := matchAny(r.HighRisk, normalizePattern(w)); named {
+			return "", false
+		}
+	}
+	return risk, true
 }
 
 // Decide classifies a repo-relative path. It returns the decision and the

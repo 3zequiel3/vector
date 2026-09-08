@@ -355,3 +355,155 @@ func TestPolicyCommandsRoundTripThroughTOML(t *testing.T) {
 		t.Error("always_forbidden was emptied by a policy that did not mention it")
 	}
 }
+
+func TestUndeclaredRisk(t *testing.T) {
+	// The rule: the pattern that authorizes a dangerous path must itself be a
+	// dangerous path. The only way to evade it is to write "migrations/**",
+	// which is the declaration that was wanted.
+	tests := []struct {
+		name  string
+		write []string
+		path  string
+		want  bool // true = allowed but never declared
+	}{
+		// The shapes that used to slip through, and the reason the first
+		// version of this check was worth almost nothing.
+		{"the bare catch-all declares nothing", []string{"**"}, "migrations/0003.sql", true},
+		{"nor does its doubled spelling", []string{"**/**"}, "migrations/0003.sql", true},
+		{"nor a single star", []string{"*"}, "Dockerfile", true},
+		{"nor the top directory most repos use", []string{"src/**"}, "src/migrations/0003.sql", true},
+		{"nor enumerating every top-level directory", []string{"src/**", "docs/**", "infra/**"}, "infra/main.tf", true},
+
+		// Naming it is the whole requirement, and it is a low bar on purpose.
+		{"naming the directory declares it", []string{"migrations/**"}, "migrations/0003.sql", false},
+		{"naming it under a prefix declares it", []string{"src/migrations/**"}, "src/migrations/0003.sql", false},
+		{"naming the extension declares it", []string{"**/*.tf"}, "infra/main.tf", false},
+		{"naming the file declares it", []string{"Dockerfile"}, "Dockerfile", false},
+		// One naming pattern is enough; it does not matter what else is beside it.
+		{"a naming pattern among broad ones is enough", []string{"src/**", "migrations/**"}, "migrations/0003.sql", false},
+
+		// Ordinary source is never the subject of this rule.
+		{"ordinary source is not risky at all", []string{"**"}, "src/components/Button.tsx", false},
+	}
+
+	p := DefaultPolicy()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := BuildRuleset(p, &Scope{Write: tt.write})
+			_, got := r.Undeclared(tt.path)
+			if got != tt.want {
+				t.Errorf("Undeclared(%q) under %v = %v, want %v", tt.path, tt.write, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUndeclaredNeedsADeclaredBoundary(t *testing.T) {
+	// With no scope at all there is nothing that failed to declare anything.
+	// NO_SCOPE_DECLARED is already the honest verdict and says more.
+	r := BuildRuleset(DefaultPolicy(), nil)
+	if _, got := r.Undeclared("migrations/0003.sql"); got {
+		t.Error("reported an undeclared risk against a boundary that was never drawn")
+	}
+}
+
+func TestRiskyIsIndependentOfBeingAllowed(t *testing.T) {
+	// A path can be perfectly in scope and still be a migration. Collapsing
+	// the two would force a report that wants to say "allowed, and worth
+	// looking at" to pick one of them.
+	r := BuildRuleset(DefaultPolicy(), &Scope{Write: []string{"**"}})
+
+	for _, p := range []string{
+		"migrations/0003_drop.sql",
+		".github/workflows/deploy.yml",
+		"infra/main.tf",
+		"Dockerfile",
+		"certs/server.pem",
+	} {
+		if _, risky := r.Risky(p); !risky {
+			t.Errorf("Risky(%q) = false, want it named", p)
+		}
+		if d, _ := r.Decide(p); d != Allowed {
+			t.Errorf("Decide(%q) = %v, want Allowed — risk is not a denial", p, d)
+		}
+	}
+	for _, p := range []string{"src/components/Button.tsx", "README.md", "internal/scope/scope.go"} {
+		if _, risky := r.Risky(p); risky {
+			t.Errorf("Risky(%q) = true, want ordinary source left alone", p)
+		}
+	}
+
+	// Deliberately absent from the defaults, and pinned so that adding them
+	// back is a decision rather than a slip. Each fires on ordinary work: an
+	// auth folder is usually a front-end component directory, "migrate" is a
+	// common package name and every vendored copy of golang-migrate, and an
+	// extension is not content — a .key is as likely to be a Keynote deck.
+	for _, p := range []string{
+		"src/auth/LoginButton.tsx",
+		"vendor/github.com/golang-migrate/migrate/migrate.go",
+		"docs/deck.key",
+	} {
+		if _, risky := r.Risky(p); risky {
+			t.Errorf("Risky(%q) = true — this shape fires on ordinary work", p)
+		}
+	}
+}
+
+func TestHighRiskSurvivesAPolicyThatDoesNotMentionIt(t *testing.T) {
+	// Existing repositories have a policy.toml written before this list
+	// existed. They must get the defaults rather than an empty list, or the
+	// feature would be silently off everywhere it was not re-initialised.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".vector"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[scope]\nalways_forbidden = [\".vector/**\"]\n\n[mode]\nenforcement = \"advisory\"\n"
+	if err := os.WriteFile(filepath.Join(dir, ".vector", "policy.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := LoadPolicy(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Scope.HighRisk) == 0 {
+		t.Error("high_risk was emptied by a policy written before it existed")
+	}
+}
+
+func TestAnExplicitlyEmptyListTurnsTheRuleOff(t *testing.T) {
+	// Omitting a key keeps the default; writing "= []" means the project
+	// decided it wants none. Those must not be the same thing — a repository
+	// whose layout makes the defaults noisy needs a way out that is not
+	// copying and then maintaining the whole list by hand.
+	//
+	// The same mechanics apply to always_forbidden, where the consequence is
+	// far larger: emptying it removes vector's protection over its own config.
+	// `vector doctor` fails on exactly that, which is why it is a diagnostic
+	// rather than something LoadPolicy refuses.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".vector"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[scope]\nhigh_risk = []\n"
+	if err := os.WriteFile(filepath.Join(dir, ".vector", "policy.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := LoadPolicy(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Scope.HighRisk) != 0 {
+		t.Errorf("high_risk = %v, want the explicit opt-out honoured", p.Scope.HighRisk)
+	}
+	r := BuildRuleset(p, &Scope{Write: []string{"**"}})
+	if _, risky := r.Risky("migrations/0003.sql"); risky {
+		t.Error("a path was still called risky with the list explicitly emptied")
+	}
+	// And the rest of the defaults survive: emptying one list is not a request
+	// to empty the others.
+	if len(p.Scope.AlwaysForbidden) == 0 {
+		t.Error("always_forbidden was emptied by a policy that only mentioned high_risk")
+	}
+}

@@ -1,0 +1,10 @@
+objective = "a catch-all boundary authorizes nothing in particular: name the dangerous paths a change touched"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/scope/**",
+  "internal/audit/**",
+  "internal/verify/**",
+  "internal/setup/**",
+]
