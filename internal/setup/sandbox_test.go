@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -214,3 +215,49 @@ func TestSandboxEnabledReadsTheProjectFile(t *testing.T) {
 }
 
 var _ = json.Marshal
+
+// The rule is the platform's, not vector's: on Linux and WSL2 the sandbox
+// mounts concrete paths and discards a write entry that still holds a wildcard
+// once a trailing "/**" is removed. macOS honours all of them. Both halves are
+// asserted here so a change to one is not mistaken for the other.
+func TestSandboxInertNamesWhatThePlatformDiscards(t *testing.T) {
+	cases := []struct {
+		entry string
+		inert bool
+	}{
+		{"./.env", false},
+		{"./.vector/**", false},       // trailing /** is stripped, nothing left
+		{"./.claude/hooks/**", false}, // same
+		{"./.git/config", false},
+		{"./.env.*", true},        // wildcard survives the strip
+		{"./**/.gitignore", true}, // the /** is not trailing
+		{"./cache?", true},
+		{"./log[0-9]", true},
+	}
+	for _, c := range cases {
+		want := c.inert && runtime.GOOS != "darwin"
+		if got := sandboxInert(c.entry); got != want {
+			t.Errorf("sandboxInert(%q) on %s = %v, want %v", c.entry, runtime.GOOS, got, want)
+		}
+	}
+}
+
+func TestSandboxInertReadsTheSettingsFile(t *testing.T) {
+	root := newRepo(t)
+	if got := SandboxInert(root); got != nil {
+		t.Errorf("with no settings file at all: %v", got)
+	}
+	if _, err := InstallClaudeSandbox(root, forbidden()); err != nil {
+		t.Fatal(err)
+	}
+	got := SandboxInert(root)
+	if runtime.GOOS == "darwin" {
+		if got != nil {
+			t.Errorf("macOS honours wildcards, so nothing should be reported: %v", got)
+		}
+		return
+	}
+	if len(got) != 1 || got[0] != "./.env.*" {
+		t.Errorf("got %v, want only ./.env.* — the other three survive the strip", got)
+	}
+}

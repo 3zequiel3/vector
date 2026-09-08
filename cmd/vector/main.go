@@ -256,6 +256,12 @@ func runInit(args []string) int {
 		default:
 			fmt.Printf("\nOS sandbox already configured in %s\n", sr.Path)
 		}
+		if inert := setup.SandboxInert(root); len(inert) > 0 {
+			fmt.Printf("  %d of them this platform's sandbox ignores: %s\n",
+				len(inert), strings.Join(inert, ", "))
+			fmt.Println("  it mounts concrete paths, so a pattern with a wildcard in it is discarded")
+			fmt.Println("  the hook still denies these; the OS does not")
+		}
 	}
 	return 0
 }

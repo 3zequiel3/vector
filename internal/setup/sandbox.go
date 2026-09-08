@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -183,6 +184,55 @@ func RemoveClaudeSandbox(root string, forbidden []string) (HookResult, error) {
 		return res, err
 	}
 	return res, writeAtomic(path, string(out)+"\n")
+}
+
+// sandboxInert reports whether this platform's sandbox discards an entry.
+//
+// On Linux and WSL2 the sandbox mounts concrete paths, so Claude Code removes a
+// trailing "/**" and then skips any write entry still containing "*", "?" or
+// "[" — that entry has no effect at all. macOS Seatbelt matches patterns and
+// honours every one. Documented under "Sandbox path prefixes" in
+// https://code.claude.com/docs/en/settings-reference
+//
+// Vector writes the same entries on every platform on purpose: the settings
+// file is committed, and a colleague on macOS gets the protection. What vector
+// must not do is let a Linux user believe a rule is enforced when the OS threw
+// it away — a configuration that is present and dead is exactly the failure
+// this tool exists to catch.
+func sandboxInert(entry string) bool {
+	if runtime.GOOS == "darwin" {
+		return false
+	}
+	return strings.ContainsAny(strings.TrimSuffix(entry, "/**"), "*?[")
+}
+
+// SandboxInert reports which of the project's denyWrite entries this platform's
+// sandbox discards.
+//
+// It reads the settings file rather than the policy, because the question is
+// what the OS was actually handed — including entries vector did not write.
+func SandboxInert(root string) []string {
+	data, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
+	if err != nil {
+		return nil
+	}
+	var settings struct {
+		Sandbox struct {
+			Filesystem struct {
+				DenyWrite []string `json:"denyWrite"`
+			} `json:"filesystem"`
+		} `json:"sandbox"`
+	}
+	if json.Unmarshal(data, &settings) != nil {
+		return nil
+	}
+	var inert []string
+	for _, e := range settings.Sandbox.Filesystem.DenyWrite {
+		if sandboxInert(e) {
+			inert = append(inert, e)
+		}
+	}
+	return inert
 }
 
 // SandboxEnabled reports whether the project's settings turn the sandbox on.

@@ -528,6 +528,19 @@ follow, and the third is the one worth knowing:
   diff audit detects them. T3 covers the paths that are wrong in every task, not
   the ones that are wrong in this one.
 
+A fourth thing follows from the platform rather than from vector. On Linux and
+WSL2 the sandbox mounts concrete paths, so Claude Code removes a trailing `/**`
+from a write entry and then **discards** any entry still containing `*`, `?` or
+`[`. macOS Seatbelt matches patterns and honours all of them. With the default
+list that costs two entries on Linux — `./**/.gitignore` and `./.env.*` — while
+the other eighteen, `./.vector/**` and `./.claude/hooks/**` among them, survive
+the strip and are enforced. vector writes the same entries everywhere, because
+the settings file is committed and a colleague on macOS gets the protection; it
+does not pretend they are all live. `vector init` names the discarded ones as it
+writes them and `vector doctor` warns about them under `sandbox patterns`, read
+from the settings file rather than the policy, so an entry someone else added
+counts too. Those paths keep their T5 protection: the hook still denies them.
+
 `vector uninstall` withdraws vector's `denyWrite` entries and deliberately
 leaves `sandbox.enabled` alone: turning off a protection the repository asked
 for, on the way out, is not uninstalling.

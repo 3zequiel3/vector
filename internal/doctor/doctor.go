@@ -388,6 +388,15 @@ func checkEnforcement(b *builder, root string) string {
 		b.add("enforcement", "sandbox", OK,
 			"T3 confinement — the OS denies forbidden writes, including from scripts vector cannot see",
 			"")
+		// A denied path this platform silently drops is worse than no rule at
+		// all, because the settings file reads as if it were covered.
+		if inert := setup.SandboxInert(root); len(inert) > 0 {
+			b.add("enforcement", "sandbox patterns", Warn,
+				fmt.Sprintf("%d denyWrite entries this platform ignores: %s",
+					len(inert), strings.Join(inert, ", ")),
+				"the sandbox mounts concrete paths here, so a wildcard entry is discarded; "+
+					"the hook still denies them, the OS does not")
+		}
 	} else {
 		b.add("enforcement", "sandbox", Warn,
 			"off — a script that opens a file is invisible to a tool-level hook",
