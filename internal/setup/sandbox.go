@@ -47,22 +47,38 @@ func sandboxTranslate(pattern string) string {
 	return "./" + p
 }
 
-// SandboxForbidden returns the subset of policy protections that can safely be
-// handed to Claude's OS sandbox. Git's ignore metadata is deliberately kept
-// out of this list: Claude's sandbox has behaved as if denying writes to these
-// files also denied reads on some platforms/configurations. Git must be able
-// to read them or every status/diff becomes incomplete and Vector can report a
-// false inventory of changes. The hook still protects these paths before
-// writes, using the complete policy ruleset.
-func SandboxForbidden(forbidden []string) []string {
+// sandboxKey is the form two patterns are compared in.
+//
+// Both sides go through it, so a policy that writes "./.gitignore" and a
+// hook_only list that writes ".gitignore" are talking about the same file.
+// Comparing raw strings would make an exclusion depend on a spelling nobody
+// was told to match, and it would fail silently — the path would simply reach
+// the sandbox anyway.
+func sandboxKey(pattern string) string {
+	return strings.TrimPrefix(strings.TrimSpace(pattern), "./")
+}
+
+// SandboxForbidden returns the protections that go to Claude's OS sandbox:
+// everything the policy forbids, minus what it marked hook_only.
+//
+// The exclusion is the policy's call, not vector's. Which layer enforces a
+// protection is a trade a project has to be able to see and change — the
+// defaults are in scope.DefaultPolicy, and the reasoning for them is there
+// with them. The hook goes on denying every path either way; this decides only
+// what the kernel is also asked to stop.
+func SandboxForbidden(forbidden, hookOnly []string) []string {
+	excluded := make(map[string]bool, len(hookOnly))
+	for _, pattern := range hookOnly {
+		if key := sandboxKey(pattern); key != "" {
+			excluded[key] = true
+		}
+	}
 	out := make([]string, 0, len(forbidden))
 	for _, pattern := range forbidden {
-		switch strings.TrimPrefix(strings.TrimSpace(pattern), "./") {
-		case ".gitignore", "**/.gitignore", ".git/info/exclude", ".gitattributes":
+		if excluded[sandboxKey(pattern)] {
 			continue
-		default:
-			out = append(out, pattern)
 		}
+		out = append(out, pattern)
 	}
 	return out
 }

@@ -106,6 +106,13 @@ func InitWith(root string, sandbox *bool) (Result, error) {
 // high_risk is deliberately not treated this way. It documents `= []` as a
 // real opt-out for a project whose layout makes the defaults noisy, and
 // re-adding them would take that away.
+//
+// hook_only is not either, and there the reason is stronger: growing it means
+// withdrawing a path from the OS sandbox. Additive defaults are safe on a deny
+// list because the worst case is more protection than was asked for; on this
+// one the worst case is less, arriving silently, on a run someone started for
+// an unrelated reason. A project that shortens this list has chosen a stricter
+// sandbox, and init has no business undoing that.
 func adoptNewForbidden(p *scope.Policy) []string {
 	have := map[string]bool{}
 	for _, f := range p.Scope.AlwaysForbidden {
@@ -229,6 +236,21 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 	b.WriteString("# workflow are things a change legitimately edits. They are named in every\n")
 	b.WriteString("# report, and a boundary of \"**\" does not count as having declared them.\n")
 	kv(&b, "high_risk", p.Scope.HighRisk)
+	b.WriteString("\n# Protected by the hook, and deliberately not by the OS sandbox. The hook\n")
+	b.WriteString("# reads tool arguments and parses shell commands, so it sees\n")
+	b.WriteString("# `echo x > .gitignore` but not a write made inside a process, such as\n")
+	b.WriteString("# python3 -c \"open('.gitignore','a').write(...)\". The sandbox catches both,\n")
+	b.WriteString("# because the kernel enforces it — so a path listed here keeps hook\n")
+	b.WriteString("# protection and loses that layer.\n")
+	b.WriteString("#\n")
+	b.WriteString("# The defaults are here because git has to be able to READ its own ignore\n")
+	b.WriteString("# metadata. On some platforms the sandbox's write denial also denied reads,\n")
+	b.WriteString("# and the audit is built on `git diff` plus `git ls-files --exclude-standard`:\n")
+	b.WriteString("# a git that cannot read those files makes vector report a false inventory\n")
+	b.WriteString("# of what changed.\n")
+	b.WriteString("#\n")
+	b.WriteString("# Adding a path here is a deliberate trade, not a cleanup.\n")
+	kv(&b, "hook_only", p.Scope.HookOnly)
 	fmt.Fprintf(&b, "\nexpansion_requires_evidence = %t\n", p.Scope.ExpansionRequiresEvidence)
 
 	b.WriteString("\n[mode]\n")

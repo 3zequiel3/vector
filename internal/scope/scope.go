@@ -58,6 +58,21 @@ type Policy struct {
 		// these are never denied — they are named, every time, and they cannot
 		// be swept up by a boundary that authorized everything.
 		HighRisk []string `toml:"high_risk"`
+		// HookOnly names protections that stop at the hook and are never
+		// handed to the OS sandbox.
+		//
+		// Which paths are protected was always the project's decision; which
+		// layer enforces them was not. Vector struck git's ignore metadata off
+		// the sandbox list in code, invisibly, with nowhere for a project to
+		// disagree — the same kind of silent constraint this tool exists to
+		// make legible. So it is a policy key like the two above it.
+		//
+		// What it trades away is real. The hook reads tool arguments and
+		// parses shell commands, so it sees `echo x > .gitignore`; it cannot
+		// see a write made from inside a process. The sandbox catches both
+		// because the kernel enforces it. A path named here keeps the first
+		// guarantee and gives up the second.
+		HookOnly []string `toml:"hook_only"`
 	} `toml:"scope"`
 	Mode struct {
 		Enforcement string `toml:"enforcement"` // "advisory" | "strict"
@@ -173,6 +188,21 @@ func DefaultPolicy() Policy {
 		"**/*.pem",
 		"**/*.p12",
 		"**/*.pfx",
+	}
+	// Git must be able to read its own ignore metadata. Claude Code's sandbox
+	// has behaved as if denying writes to these files also denied reads on
+	// some platforms, and the audit is built on `git diff` plus `git ls-files
+	// --exclude-standard` — so a git that cannot read them makes vector report
+	// a false inventory of what changed. A tool that is confidently wrong
+	// about the diff is worse than one protection short.
+	//
+	// They stay in always_forbidden, so the hook still denies writes to them.
+	// This list gives up the kernel-enforced layer, and nothing else.
+	p.Scope.HookOnly = []string{
+		".gitignore",
+		"**/.gitignore",
+		".git/info/exclude",
+		".gitattributes",
 	}
 	p.Scope.ExpansionRequiresEvidence = true
 	p.Mode.Enforcement = "advisory"

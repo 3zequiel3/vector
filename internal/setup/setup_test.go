@@ -553,6 +553,64 @@ func TestInitLeavesHighRiskAlone(t *testing.T) {
 	}
 }
 
+func TestHookOnlySurvivesAPolicyRegeneration(t *testing.T) {
+	// [scope] is the project's, and this key decides how much of it the kernel
+	// enforces. A regeneration that reset it would quietly hand paths back to
+	// the sandbox — or take them away — on a run someone started to refresh
+	// the detected stack.
+	root := gitRepo(t)
+	mkFile(t, root, ".vector/policy.toml",
+		"[scope]\nalways_forbidden = [\".vector/**\", \".gitignore\", \".env\"]\n"+
+			"hook_only = [\".env\"]\n")
+
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Scope.HookOnly) != 1 || pol.Scope.HookOnly[0] != ".env" {
+		t.Fatalf("hook_only = %v, want the project's own choice kept", pol.Scope.HookOnly)
+	}
+	// And the rendered file says so, so the next run reads back what this one
+	// decided rather than the defaults.
+	raw, err := os.ReadFile(filepath.Join(root, ".vector", "policy.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "hook_only = [\n  \".env\",\n]") {
+		t.Errorf("policy.toml did not render hook_only:\n%s", raw)
+	}
+	// The default git paths are not re-added: growing this list withdraws a
+	// path from the sandbox, and that is not a change init gets to make.
+	if contains(pol.Scope.HookOnly, ".gitignore") {
+		t.Errorf("hook_only = %v, want init not to widen it", pol.Scope.HookOnly)
+	}
+}
+
+func TestInitLeavesHookOnlyEmptyWhenTheProjectEmptiedIt(t *testing.T) {
+	// `hook_only = []` asks for every protection to reach the OS sandbox too.
+	// It is the strict direction, and an opt-out init must honour rather than
+	// read as an absent key.
+	root := gitRepo(t)
+	mkFile(t, root, ".vector/policy.toml", "[scope]\nhook_only = []\n")
+
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Scope.HookOnly) != 0 {
+		t.Errorf("hook_only = %v, want the opt-out honoured", pol.Scope.HookOnly)
+	}
+	if len(SandboxForbidden(pol.Scope.AlwaysForbidden, pol.Scope.HookOnly)) != len(pol.Scope.AlwaysForbidden) {
+		t.Error("something was still withheld from the sandbox with hook_only emptied")
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/3zequiel3/vector/internal/scope"
 )
 
 func forbidden() []string {
@@ -46,12 +48,8 @@ func TestTranslateAnchorsAtTheProjectRoot(t *testing.T) {
 	}
 }
 
-func TestSandboxForbiddenLeavesGitMetadataReadable(t *testing.T) {
-	got := SandboxForbidden([]string{
-		".vector/**", ".gitignore", "**/.gitignore", ".git/info/exclude",
-		".gitattributes", ".env", ".claude/settings.json",
-	})
-	want := []string{".vector/**", ".env", ".claude/settings.json"}
+func sameList(t *testing.T, got, want []string) {
+	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("SandboxForbidden() = %v, want %v", got, want)
 	}
@@ -60,6 +58,67 @@ func TestSandboxForbiddenLeavesGitMetadataReadable(t *testing.T) {
 			t.Errorf("SandboxForbidden()[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
+}
+
+func TestSandboxForbiddenLeavesGitMetadataReadable(t *testing.T) {
+	// The shipped default: git's ignore metadata is denied by the hook and not
+	// by the sandbox, because a sandbox that also blocks reads leaves git
+	// unable to describe its own repository.
+	got := SandboxForbidden([]string{
+		".vector/**", ".gitignore", "**/.gitignore", ".git/info/exclude",
+		".gitattributes", ".env", ".claude/settings.json",
+	}, scope.DefaultPolicy().Scope.HookOnly)
+	sameList(t, got, []string{".vector/**", ".env", ".claude/settings.json"})
+}
+
+func TestSandboxForbiddenHonoursTheProjectsOwnExclusions(t *testing.T) {
+	// The exclusion list is the policy's, not vector's. A project that names
+	// something else must get exactly that, and the built-in git paths must
+	// stop being special the moment it does.
+	got := SandboxForbidden(
+		[]string{".vector/**", ".gitignore", "docs/**", ".env"},
+		[]string{"docs/**"},
+	)
+	sameList(t, got, []string{".vector/**", ".gitignore", ".env"})
+}
+
+func TestSandboxForbiddenWithNoExclusionsSendsEverythingToTheSandbox(t *testing.T) {
+	// `hook_only = []` is a project asking for the strictest arrangement
+	// available: every protection enforced by the kernel too. It has to mean
+	// that, and not fall back to the defaults, or the opt-in would be a no-op.
+	forbidden := []string{".vector/**", ".gitignore", ".gitattributes", ".env"}
+	sameList(t, SandboxForbidden(forbidden, nil), forbidden)
+	sameList(t, SandboxForbidden(forbidden, []string{}), forbidden)
+}
+
+func TestSandboxForbiddenMatchesAcrossLeadingDotSlash(t *testing.T) {
+	// Nobody is told which spelling to use, and the two lists are written by
+	// hand at different times. If normalization applied to only one side the
+	// exclusion would miss, and it would miss silently — the path would reach
+	// the sandbox and the file it protects would stop being readable.
+	sameList(t,
+		SandboxForbidden([]string{"./.gitignore", ".env"}, []string{".gitignore"}),
+		[]string{".env"})
+	sameList(t,
+		SandboxForbidden([]string{".gitignore", ".env"}, []string{"  ./.gitignore  "}),
+		[]string{".env"})
+}
+
+func TestSandboxForbiddenDefaultsToTheGitMetadataWhenThePolicyIsSilent(t *testing.T) {
+	// A policy.toml written before hook_only existed does not mention it, and
+	// such a repository must keep behaving exactly as it did — the sandbox
+	// denying git's ignore files is the bug this key was introduced to name.
+	dir := t.TempDir()
+	mkFile(t, dir, ".vector/policy.toml",
+		"[scope]\nalways_forbidden = [\".vector/**\", \".gitignore\", \".env\"]\n")
+
+	pol, err := scope.LoadPolicy(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameList(t,
+		SandboxForbidden(pol.Scope.AlwaysForbidden, pol.Scope.HookOnly),
+		[]string{".vector/**", ".env"})
 }
 
 func TestSandboxTurnsOnAndDeniesTheForbiddenPaths(t *testing.T) {
