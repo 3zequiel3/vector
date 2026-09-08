@@ -1,0 +1,16 @@
+objective = "detection stops being silent about what it could not find"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/detect/**",
+]
+
+[[expansion]]
+at = "2026-09-08T04:19:54Z"
+reason = "invariant"  # violates an explicit project invariant
+evidence = "doctor labelled every detection note 'freshness', which is now wrong for the monorepo note; and the reference documents which ecosystems yield commands, which composer just joined and bundler deliberately did not."
+write = [
+  "internal/doctor/**",
+  "docs/**",
+]

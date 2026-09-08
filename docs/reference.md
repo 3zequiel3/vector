@@ -307,6 +307,30 @@ touches one and no declared pattern was *about* it, the verdict is capped and
 names the path. `migrations/**` declares a migration; `src/**` does not, however
 many migrations live under `src`.
 
+### Which ecosystems yield commands
+
+| Ecosystem | Where the commands come from |
+| --- | --- |
+| npm, pnpm, yarn, bun | `package.json` scripts, plus a synthesised `tsc --noEmit` when a `tsconfig.json` exists and no typecheck script does |
+| go | `go test ./...`, `go build ./...`, `go vet ./...` |
+| cargo | `cargo test`, `cargo build`, `cargo clippy` |
+| uv, poetry, pdm, pipenv | `<pm> run pytest` |
+| composer | `composer.json` scripts — `test`/`tests`/`phpunit`, `phpstan`/`psalm`/`analyse`, `lint`/`cs`/`phpcs` |
+| bundler | **nothing, on purpose.** Ruby has no manifest that declares how to run a project's tests; `bundle exec rspec` is a convention, not a declaration, and vector invokes what a project states rather than what its ecosystem usually does. Say so in `[commands]` |
+
+**Monorepos are the known gap.** Detection resolves the repository root and
+walks *upward*, which is right for the ordinary shape and wrong for both
+ordinary monorepos: a root whose scripts live in `apps/web`, and a root with no
+manifest at all beside `frontend/` and `backend/`. vector does not guess which
+subproject is the project — a monorepo has no single answer, which is what
+makes it one. It says what it saw:
+
+```
+warn detection   manifests exist below the repository root (apps/web/package.json);
+                 detection reads the root only, so declare the commands you want
+                 under [commands] in policy.toml
+```
+
 Checks run cheapest first — typecheck, lint, test, build — because a type error
 explains the test failures that follow. `verify` is never invoked by a hook:
 running a suite at the end of every turn would cost more than the waste it

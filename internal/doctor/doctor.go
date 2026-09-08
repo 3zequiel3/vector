@@ -204,8 +204,12 @@ func checkStack(b *builder, root string) detect.Stack {
 				"installed is what runs; the manifest asks for something else")
 		}
 	}
+	// "detection" rather than "freshness": these notes now carry two different
+	// kinds of fact — an install directory older than its lockfile, and a
+	// manifest sitting somewhere detection does not read — and labelling the
+	// second one freshness would be wrong out loud.
 	for _, n := range s.Notes {
-		b.add("stack", "freshness", Warn, n, "")
+		b.add("stack", "detection", Warn, n, "")
 	}
 	return s
 }

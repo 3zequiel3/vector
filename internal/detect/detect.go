@@ -16,6 +16,7 @@ package detect
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,6 +120,7 @@ func Detect(root string) Stack {
 	}
 
 	s.Notes = append(s.Notes, staleness(root, s.PM)...)
+	s.Notes = append(s.Notes, subprojectNote(root)...)
 	return s
 }
 
@@ -361,8 +363,45 @@ func DetectCommands(root string, pm PackageManager) Commands {
 		return Commands{Test: "cargo test", Build: "cargo build", Lint: "cargo clippy"}
 	case "uv", "poetry", "pdm", "pipenv":
 		return Commands{Test: pm.Name + " run pytest"}
+	case "composer":
+		return composerCommands(root)
 	}
+	// bundler reaches here on purpose. Ruby has no manifest that declares how
+	// to run a project's tests — `bundle exec rspec` and `bundle exec rake` are
+	// conventions, not declarations, and vector invokes commands a project
+	// states rather than ones it guesses. A Ruby project says so in
+	// policy.toml's [commands], which is exactly what that section is for.
 	return Commands{}
+}
+
+// composerCommands reads composer.json's own scripts, the same way
+// nodeCommands reads package.json's.
+//
+// Composer scripts are a declaration a project made about itself, so reading
+// them is the same act as reading package.json — not a guess about how PHP
+// projects are usually run. Only names that mean the same thing everywhere are
+// recognised.
+func composerCommands(root string) Commands {
+	var m struct {
+		Scripts map[string]json.RawMessage `json:"scripts"`
+	}
+	data, err := os.ReadFile(filepath.Join(root, "composer.json"))
+	if err != nil || json.Unmarshal(data, &m) != nil {
+		return Commands{}
+	}
+	pick := func(names ...string) string {
+		for _, n := range names {
+			if _, ok := m.Scripts[n]; ok {
+				return "composer run-script " + n
+			}
+		}
+		return ""
+	}
+	return Commands{
+		Test:      pick("test", "tests", "phpunit"),
+		Typecheck: pick("phpstan", "psalm", "analyse", "analyze"),
+		Lint:      pick("lint", "cs", "phpcs"),
+	}
 }
 
 func nodeCommands(root, pm string) Commands {
@@ -467,6 +506,76 @@ func toolVersion(bin string, args ...string) string {
 		}
 	}
 	return line
+}
+
+// subprojectNote explains a silence that would otherwise be a mystery.
+//
+// Detection resolves the repository root and walks upward from there, which is
+// right for the ordinary shape and wrong for the two ordinary monorepos: a
+// root with a lockfile whose scripts live in apps/web, and a root with no
+// manifest at all while frontend/ and backend/ each have their own. In both,
+// vector reports "no commands detected" and the reader is left to guess
+// whether that is a bug.
+//
+// It deliberately does not guess which subproject is the project. Picking one
+// would be inventing a claim, and a monorepo has no single answer — that is
+// what makes it a monorepo. What it can do is say what it saw, so the reader
+// reaches [commands] in policy.toml knowing why.
+func subprojectNote(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	// Two levels, because both ordinary monorepo shapes need them: packages
+	// sitting directly under the root, and the apps/web, packages/ui layout
+	// that every JS workspace tool produces. Deeper than that is a search, and
+	// a search that has to guess which result is the project.
+	var found []string
+	skip := func(n string) bool {
+		return strings.HasPrefix(n, ".") || n == "node_modules" ||
+			n == "vendor" || n == "testdata" || n == "dist" || n == "build"
+	}
+	for _, e := range entries {
+		if !e.IsDir() || skip(e.Name()) || len(found) >= 4 {
+			continue
+		}
+		if m, ok := manifestIn(filepath.Join(root, e.Name())); ok {
+			found = append(found, e.Name()+"/"+m)
+			continue
+		}
+		inner, err := os.ReadDir(filepath.Join(root, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, in := range inner {
+			if !in.IsDir() || skip(in.Name()) || len(found) >= 4 {
+				continue
+			}
+			if m, ok := manifestIn(filepath.Join(root, e.Name(), in.Name())); ok {
+				found = append(found, e.Name()+"/"+in.Name()+"/"+m)
+			}
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	return []string{fmt.Sprintf(
+		"manifests exist below the repository root (%s); detection reads the root only,"+
+			" so declare the commands you want under [commands] in policy.toml",
+		strings.Join(found, ", "))}
+}
+
+// manifestIn reports the first manifest a directory declares itself with.
+func manifestIn(dir string) (string, bool) {
+	for _, m := range []string{
+		"package.json", "pyproject.toml", "Cargo.toml", "go.mod", "composer.json", "Gemfile",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, m)); err == nil {
+			return m, true
+		}
+	}
+	return "", false
 }
 
 // Disagrees reports a mismatch only when one can be proven without a semver

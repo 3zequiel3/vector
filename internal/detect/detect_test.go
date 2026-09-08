@@ -3,6 +3,7 @@ package detect
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -250,5 +251,113 @@ func TestTraversalStopsAtTheRepositoryBoundary(t *testing.T) {
 	if pm.Name != "unknown" {
 		t.Errorf("name = %q from %q, want unknown — detection escaped the repository",
 			pm.Name, pm.Lockfile)
+	}
+}
+
+func TestComposerCommandsComeFromTheProjectsOwnScripts(t *testing.T) {
+	// The same act as reading package.json: a composer script is a declaration
+	// the project made about itself, not a guess about how PHP is usually run.
+	root := t.TempDir()
+	write(t, root, "composer.json", `{"scripts":{
+		"test": "phpunit",
+		"phpstan": "phpstan analyse",
+		"lint": "php-cs-fixer fix"
+	}}`)
+
+	c := DetectCommands(root, PackageManager{Name: "composer"})
+	if c.Test != "composer run-script test" {
+		t.Errorf("Test = %q", c.Test)
+	}
+	if c.Typecheck != "composer run-script phpstan" {
+		t.Errorf("Typecheck = %q", c.Typecheck)
+	}
+	if c.Lint != "composer run-script lint" {
+		t.Errorf("Lint = %q", c.Lint)
+	}
+}
+
+func TestComposerInventsNothingWhenTheProjectDeclaresNothing(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "composer.json", `{"name":"acme/x"}`)
+	if c := DetectCommands(root, PackageManager{Name: "composer"}); c != (Commands{}) {
+		t.Errorf("Commands = %+v, want none invented", c)
+	}
+}
+
+func TestBundlerDeclaresNothingOnPurpose(t *testing.T) {
+	// Ruby has no manifest that says how to run a project's tests. `bundle
+	// exec rspec` is a convention, and vector invokes what a project states
+	// rather than what its ecosystem usually does. [commands] is the answer.
+	root := t.TempDir()
+	write(t, root, "Gemfile", "source 'https://rubygems.org'\n")
+	if c := DetectCommands(root, PackageManager{Name: "bundler"}); c != (Commands{}) {
+		t.Errorf("Commands = %+v, want nothing guessed", c)
+	}
+}
+
+func TestDetectionSaysWhenTheManifestsAreBelowTheRoot(t *testing.T) {
+	// The two ordinary monorepo shapes. Detection reads the root and walks
+	// upward, so both report no commands — and used to report no reason
+	// either, leaving the reader to guess whether it was a bug.
+	for _, tt := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name: "packages directly under the root",
+			files: map[string]string{
+				"frontend/package.json":  `{"scripts":{"test":"vitest"}}`,
+				"backend/pyproject.toml": "[project]\nname=\"b\"\n",
+			},
+			want: "backend/pyproject.toml, frontend/package.json",
+		},
+		{
+			name: "the apps/web layout every workspace tool produces",
+			files: map[string]string{
+				"pnpm-lock.yaml":        "",
+				"package.json":          `{"name":"root"}`,
+				"apps/web/package.json": `{"scripts":{"test":"vitest"}}`,
+			},
+			want: "apps/web/package.json",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			for p, c := range tt.files {
+				write(t, root, p, c)
+			}
+			var note string
+			for _, n := range Detect(root).Notes {
+				if strings.Contains(n, "below the repository root") {
+					note = n
+				}
+			}
+			if note == "" {
+				t.Fatalf("no note; the reader is left guessing why nothing was detected")
+			}
+			if !strings.Contains(note, tt.want) {
+				t.Errorf("note = %q, want it to name %q", note, tt.want)
+			}
+			if !strings.Contains(note, "[commands]") {
+				t.Errorf("note = %q, want it to say where to fix it", note)
+			}
+		})
+	}
+}
+
+func TestNoSubprojectNoteOnAnOrdinaryRepository(t *testing.T) {
+	// Every ordinary project has directories. The note must fire on manifests,
+	// not on the existence of folders, or it is noise on every run.
+	root := t.TempDir()
+	write(t, root, "package.json", `{"scripts":{"test":"vitest"}}`)
+	write(t, root, "pnpm-lock.yaml", "")
+	write(t, root, "src/index.ts", "export const a = 1\n")
+	write(t, root, "docs/readme.md", "# x\n")
+
+	for _, n := range Detect(root).Notes {
+		if strings.Contains(n, "below the repository root") {
+			t.Errorf("note fired on an ordinary repository: %q", n)
+		}
 	}
 }
