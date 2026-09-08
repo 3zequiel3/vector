@@ -170,6 +170,17 @@ func runInit(args []string) int {
 	}
 	fmt.Printf("%s %s\n\n", res.PolicyPath, verb)
 
+	// A protection that arrives silently is a protection nobody knows they
+	// have, and one someone may have removed on purpose.
+	if len(res.NewForbidden) > 0 {
+		fmt.Printf("added %d deny path(s) this policy predated:\n", len(res.NewForbidden))
+		for _, f := range res.NewForbidden {
+			fmt.Printf("  + %s\n", f)
+		}
+		fmt.Println("  remove any you do not want; init will add them back, so it is a decision")
+		fmt.Println()
+	}
+
 	s := res.Stack
 	line("languages", strings.Join(s.Languages, ", "))
 	pm := s.PM.Name

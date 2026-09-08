@@ -25,7 +25,8 @@ installed = "1.27.1"
 # Shown commented out, as detected. Detection stays live — vector re-reads
 # the manifests on every run, so an upgraded project needs no edit here.
 # Uncomment a line only to correct what detection got wrong: an uncommented
-# value wins, and goes on winning until you remove it.
+# value wins, survives `vector init`, and goes on winning until you
+# remove it.
 [commands]
 # test = "go test ./..."  (detected)
 # typecheck = ""  (no local evidence)
@@ -44,7 +45,37 @@ always_forbidden = [
   ".cursor/hooks.json",
   ".env",
   ".env.*",
+  ".claude/agents/**",
+  ".claude/skills/**",
+  ".claude/commands/**",
+  ".mcp.json",
+  ".codex/config.toml",
+  ".cursor/mcp.json",
+  ".git/hooks/**",
+  ".git/config",
+  ".gitignore",
+  "**/.gitignore",
+  ".git/info/exclude",
+  ".gitattributes",
 ]
+
+# Written deliberately or not at all. Never denied — a migration and a
+# workflow are things a change legitimately edits. They are named in every
+# report, and a boundary of "**" does not count as having declared them.
+high_risk = [
+  "**/migrations/**",
+  ".github/workflows/**",
+  ".gitlab-ci.yml",
+  "Jenkinsfile",
+  "**/*.tf",
+  "**/*.tfvars",
+  "Dockerfile",
+  "**/docker-compose*.yml",
+  "**/*.pem",
+  "**/*.p12",
+  "**/*.pfx",
+]
+
 expansion_requires_evidence = true
 
 [mode]

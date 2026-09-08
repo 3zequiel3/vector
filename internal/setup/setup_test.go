@@ -148,9 +148,16 @@ func TestInitPreservesTheHumanOwnedSections(t *testing.T) {
 	if res.Policy.Scope.ExpansionRequiresEvidence {
 		t.Error("expansion_requires_evidence reverted to true; the human decision was lost")
 	}
-	if len(res.Policy.Scope.AlwaysForbidden) != 1 ||
-		res.Policy.Scope.AlwaysForbidden[0] != "solo/esto/**" {
-		t.Errorf("always_forbidden = %v, want the customized list", res.Policy.Scope.AlwaysForbidden)
+	// The customization survives. The deny list is the one exception to
+	// "preserved verbatim": it also grows, because it is the list whose whole
+	// purpose is that an agent cannot weaken its own constraints, and a
+	// repository frozen at the protections of the day it was set up is not
+	// protected by the ones added since. Additions are announced.
+	if !contains(res.Policy.Scope.AlwaysForbidden, "solo/esto/**") {
+		t.Errorf("always_forbidden = %v, lost the customized entry", res.Policy.Scope.AlwaysForbidden)
+	}
+	if !contains(res.Policy.Scope.AlwaysForbidden, ".vector/**") {
+		t.Errorf("always_forbidden = %v, did not adopt the defaults", res.Policy.Scope.AlwaysForbidden)
 	}
 }
 
@@ -466,4 +473,91 @@ func TestAgentSuppliedTextCannotProduceAnUnparseableScope(t *testing.T) {
 	if len(sc.Expansions) != 1 {
 		t.Errorf("Expansions = %v, want the appended block to have parsed", sc.Expansions)
 	}
+}
+
+func TestInitAdoptsForbiddenPathsAPolicyPredates(t *testing.T) {
+	// [scope] is preserved verbatim across regeneration, which is right — and
+	// also meant frozen. A repository initialised before a protection existed
+	// never received it: every deny path added after the day someone ran
+	// `vector init` reached new repositories only. The gap is invisible, since
+	// the policy parses and doctor is happy; the path is simply not denied.
+	//
+	// Found by registering the hooks and watching a write to .gitignore come
+	// back as merely out of scope, hours after .gitignore was added to the
+	// defaults.
+	root := gitRepo(t)
+	old := "[scope]\nalways_forbidden = [\".vector/**\", \".env\"]\n\n[mode]\nenforcement = \"advisory\"\n"
+	mkFile(t, root, ".vector/policy.toml", old)
+
+	res, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.NewForbidden) == 0 {
+		t.Fatal("nothing was adopted; a policy from before today kept the shorter list")
+	}
+	// Named, because a protection that arrives silently is one nobody knows
+	// they have and one somebody may have removed on purpose.
+	if !contains(res.NewForbidden, ".gitignore") {
+		t.Errorf("NewForbidden = %v, want the git-visibility paths among them", res.NewForbidden)
+	}
+
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := scope.BuildRuleset(pol, nil)
+	for _, p := range []string{".gitignore", ".mcp.json", ".git/hooks/pre-commit", ".claude/agents/x.md"} {
+		if d, _ := r.Decide(p); d != scope.Forbidden {
+			t.Errorf("Decide(%q) = %v, want Forbidden after adoption", p, d)
+		}
+	}
+	// What was already there survives; adoption adds, it never rewrites.
+	if d, _ := r.Decide(".env"); d != scope.Forbidden {
+		t.Error(".env stopped being denied")
+	}
+}
+
+func TestInitAdoptsNothingWhenThePolicyIsCurrent(t *testing.T) {
+	// The second run must be quiet, or every init would report a migration
+	// that already happened.
+	root := gitRepo(t)
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.NewForbidden) != 0 {
+		t.Errorf("NewForbidden = %v, want nothing to adopt on a current policy", res.NewForbidden)
+	}
+}
+
+func TestInitLeavesHighRiskAlone(t *testing.T) {
+	// high_risk documents `= []` as a real opt-out for a project whose layout
+	// makes the defaults noisy. Adopting into it the way always_forbidden does
+	// would take that away.
+	root := gitRepo(t)
+	mkFile(t, root, ".vector/policy.toml", "[scope]\nhigh_risk = []\n")
+
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := scope.LoadPolicy(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pol.Scope.HighRisk) != 0 {
+		t.Errorf("high_risk = %v, want the opt-out honoured", pol.Scope.HighRisk)
+	}
+}
+
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

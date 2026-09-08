@@ -26,6 +26,9 @@ type Result struct {
 	Stack      detect.Stack
 	Commands   detect.Commands
 	Policy     scope.Policy
+	// NewForbidden are default deny paths this run added to a policy that
+	// predated them. Reported so a protection never arrives silently.
+	NewForbidden []string
 }
 
 // Init detects the stack and writes .vector/policy.toml under root.
@@ -56,6 +59,7 @@ func InitWith(root string, sandbox *bool) (Result, error) {
 	if sandbox != nil {
 		pol.Mode.Sandbox = *sandbox
 	}
+	added := adoptNewForbidden(&pol)
 
 	stack := detect.Detect(root)
 	cmds := detect.DetectCommands(root, stack.PM)
@@ -71,12 +75,50 @@ func InitWith(root string, sandbox *bool) (Result, error) {
 	}
 
 	return Result{
-		PolicyPath: policyPath,
-		Existed:    existed,
-		Stack:      stack,
-		Commands:   cmds,
-		Policy:     pol,
+		PolicyPath:   policyPath,
+		Existed:      existed,
+		Stack:        stack,
+		Commands:     cmds,
+		Policy:       pol,
+		NewForbidden: added,
 	}, nil
+}
+
+// adoptNewForbidden adds any default forbidden path the policy does not
+// already list, and reports which.
+//
+// [scope] is preserved verbatim across regeneration, which is right: a tool
+// that discards someone's decisions on every run is one they stop running. But
+// preserved verbatim also meant frozen. A repository initialised before a
+// protection existed never received it — every self-protection rule added
+// after the day someone ran `vector init` reached new repositories only, and
+// the ones already running vector kept a list that was correct in the past.
+// The gap is invisible: the policy parses, doctor is happy, and the path is
+// simply not denied.
+//
+// So the defaults are additive, exactly as .vector/.gitignore already is: init
+// adds what is missing and rewrites nothing. A path someone deliberately
+// removed comes back, which is the safe direction for a list whose whole
+// purpose is that an agent cannot weaken its own constraints — and init says
+// out loud what it added, so removing it again is a decision rather than a
+// surprise.
+//
+// high_risk is deliberately not treated this way. It documents `= []` as a
+// real opt-out for a project whose layout makes the defaults noisy, and
+// re-adding them would take that away.
+func adoptNewForbidden(p *scope.Policy) []string {
+	have := map[string]bool{}
+	for _, f := range p.Scope.AlwaysForbidden {
+		have[f] = true
+	}
+	var added []string
+	for _, f := range scope.DefaultPolicy().Scope.AlwaysForbidden {
+		if !have[f] {
+			p.Scope.AlwaysForbidden = append(p.Scope.AlwaysForbidden, f)
+			added = append(added, f)
+		}
+	}
+	return added
 }
 
 // localState names the files under .vector/ that are per-developer working
@@ -131,7 +173,10 @@ func render(s detect.Stack, c detect.Commands, p scope.Policy) string {
 	b.WriteString("# Vector — repository contract.\n")
 	b.WriteString("#\n")
 	b.WriteString("# [stack] and [commands] are detected: `vector init` regenerates them.\n")
-	b.WriteString("# [scope] and [mode] are yours: preserved verbatim across runs.\n\n")
+	b.WriteString("# [scope] and [mode] are yours and survive every run.\n")
+	b.WriteString("# One exception: always_forbidden also grows. A repository frozen at the\n")
+	b.WriteString("# protections of the day it was set up is not protected by the ones added\n")
+	b.WriteString("# since, so `vector init` adds what is missing and says which.\n\n")
 
 	b.WriteString("[stack]\n")
 	kv(&b, "languages", s.Languages)
