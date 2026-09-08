@@ -9,7 +9,7 @@ vector notices, tells you, and — where it can — stops it first.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-220-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-225-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -424,7 +424,7 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 220 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 225 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
@@ -444,7 +444,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 220 tests
+go test ./...        # 225 tests
 go vet ./...
 gofmt -l .
 ```
