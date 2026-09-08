@@ -19,7 +19,16 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # macOS is not redundancy here. Its filesystem is case-insensitive by
+    # default, path matching is case-sensitive string comparison, and the
+    # sandbox vector configures is Seatbelt rather than bubblewrap — three
+    # things that cannot be exercised on Linux at all. A gate that never runs
+    # where a bug lives is not a gate for that bug.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:

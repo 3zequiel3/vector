@@ -1,0 +1,25 @@
+objective = "vector never lends its own voice to text an agent wrote"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/hook/**",
+  "internal/audit/**",
+]
+
+[[expansion]]
+at = "2026-09-08T04:25:06Z"
+reason = "invariant"  # violates an explicit project invariant
+evidence = "CI runs ubuntu only, and the case-insensitive filesystem finding from the risk review is live on macOS: .VECTOR/policy.toml is the same inode there and Decide sees a different string. A gate that never runs where the bug lives is not a gate for it."
+write = [
+  ".github/workflows/**",
+  "docs/**",
+]
+
+[[expansion]]
+at = "2026-09-08T04:25:34Z"
+reason = "security"  # concrete security or data-integrity risk introduced by the change
+evidence = "On macOS and Windows the filesystem is case-insensitive: writing .VECTOR/policy.toml reaches the same inode as .vector/policy.toml, while Decide compares strings case-sensitively and reports it as an unrelated, allowed path. The deny list is exactly where erring safe is correct."
+write = [
+  "internal/scope/**",
+]

@@ -507,3 +507,54 @@ func TestAnExplicitlyEmptyListTurnsTheRuleOff(t *testing.T) {
 		t.Error("always_forbidden was emptied by a policy that only mentioned high_risk")
 	}
 }
+
+func TestDenyMatchesRegardlessOfCase(t *testing.T) {
+	// On macOS and Windows the filesystem is case-insensitive: a write to
+	// .VECTOR/policy.toml reaches the same bytes as .vector/policy.toml. A
+	// case-sensitive comparison sees an unrelated path and allows it, which
+	// turns every self-protection rule into a spelling exercise on the two
+	// platforms most developers use.
+	r := BuildRuleset(DefaultPolicy(), &Scope{Write: []string{"**"}})
+
+	for _, p := range []string{
+		".VECTOR/policy.toml",
+		".Vector/scope/task.toml",
+		".CLAUDE/settings.json",
+		".ENV",
+		".Env.local",
+		".Git/hooks/pre-commit",
+		".GitIgnore",
+	} {
+		if d, _ := r.Decide(p); d != Forbidden {
+			t.Errorf("Decide(%q) = %v, want Forbidden — the filesystem may not care about case", p, d)
+		}
+	}
+}
+
+func TestAPolicyWrittenInAnyCaseStillProtects(t *testing.T) {
+	// Folding both sides is what makes it symmetric: someone who wrote
+	// ".Vector/**" in their policy protects .vector/ too.
+	var p Policy
+	p.Scope.AlwaysForbidden = []string{".Vector/**", ".ENV"}
+	r := BuildRuleset(p, &Scope{Write: []string{"**"}})
+
+	for _, path := range []string{".vector/policy.toml", ".env"} {
+		if d, _ := r.Decide(path); d != Forbidden {
+			t.Errorf("Decide(%q) = %v, want Forbidden", path, d)
+		}
+	}
+}
+
+func TestAllowStaysCaseSensitive(t *testing.T) {
+	// The asymmetry is the point. In the deny list a false match costs one
+	// explained denial; in the write list it would silently widen a boundary,
+	// so it stays exact.
+	r := BuildRuleset(DefaultPolicy(), &Scope{Write: []string{"src/**"}})
+
+	if d, _ := r.Decide("src/a.ts"); d != Allowed {
+		t.Errorf("Decide(src/a.ts) = %v, want Allowed", d)
+	}
+	if d, _ := r.Decide("SRC/a.ts"); d != OutOfScope {
+		t.Errorf("Decide(SRC/a.ts) = %v, want OutOfScope — an allow must be exact", d)
+	}
+}

@@ -304,7 +304,20 @@ func (r Ruleset) Undeclared(rel string) (string, bool) {
 // Deny is evaluated before allow. An undeclared ruleset cannot report
 // OutOfScope, because a boundary that was never drawn cannot be crossed.
 func (r Ruleset) Decide(rel string) (Decision, string) {
-	if pat, ok := matchAny(r.Forbidden, rel); ok {
+	// Deny matches without regard to case, and allow does not.
+	//
+	// On macOS and Windows the filesystem is case-insensitive: a write to
+	// .VECTOR/policy.toml reaches the same bytes as .vector/policy.toml, while
+	// a case-sensitive comparison sees an unrelated path and allows it. That
+	// turns every self-protection rule into a spelling exercise on the two
+	// platforms most developers use.
+	//
+	// The asymmetry is deliberate. In the deny list a false match costs one
+	// explained denial on a repository that genuinely has a .VECTOR directory,
+	// which is vanishingly rare; a false miss costs the guarantee. In the
+	// write list a false match would silently widen a boundary, so it stays
+	// exact.
+	if pat, ok := matchAnyFold(r.Forbidden, rel); ok {
 		return Forbidden, pat
 	}
 	if pat, ok := matchAny(r.Write, rel); ok {
@@ -336,6 +349,20 @@ func matchAny(patterns []string, rel string) (string, bool) {
 	return "", false
 }
 
+// matchAnyFold is matchAny with both sides lowercased.
+//
+// Folding the pattern as well as the path is what makes it symmetric: a policy
+// written as ".Vector/**" protects .vector/ too, and neither side has to be
+// spelled the way the other happens to be.
+func matchAnyFold(patterns []string, rel string) (string, bool) {
+	lower := strings.ToLower(rel)
+	for _, p := range patterns {
+		if _, ok := matchAny([]string{strings.ToLower(p)}, lower); ok {
+			return p, true
+		}
+	}
+	return "", false
+}
 func normalizePattern(p string) string {
 	p = strings.TrimSpace(p)
 	p = filepath.ToSlash(p)

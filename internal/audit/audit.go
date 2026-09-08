@@ -205,6 +205,31 @@ func Run(opts Options) (Report, error) {
 	return rep, nil
 }
 
+// maxObjective caps the objective in a rendered report. One line describing a
+// task; anything longer is not a description.
+const maxObjective = 200
+
+// quotedObjective renders agent-authored text so it cannot be read as vector's
+// own. See the identical reasoning on hook.quoted: the claim is not that this
+// stops prompt injection — a model with attacker text in context may act on it
+// — but that vector does not lend its authority to a string it did not write.
+func quotedObjective(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, s)
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	if len(s) > maxObjective {
+		s = s[:maxObjective] + "…"
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `'`) + `"`
+}
+
 // WriteJSON emits the report for machine consumers.
 func (r Report) WriteJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
@@ -239,7 +264,10 @@ func (r Report) WriteText(w io.Writer) error {
 	}
 
 	if r.Objective != "" {
-		fmt.Fprintf(&b, "  objective: %s\n", r.Objective)
+		// Quoted and attributed, because this string was written by the agent
+		// and this report is read by one. Vector repeating it unquoted lends
+		// its own voice to a sentence it did not write.
+		fmt.Fprintf(&b, "  the agent's objective: %s\n", quotedObjective(r.Objective))
 	}
 	// A boundary that was widened is still a boundary, but the reader deserves
 	// to know it moved.

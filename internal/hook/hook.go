@@ -198,10 +198,10 @@ func preTool(root string, e Event) *hookOutput {
 			HookEventName:      "PreToolUse",
 			PermissionDecision: "deny",
 			PermissionDecisionReason: fmt.Sprintf(
-				"vector: %s is outside the scope of %q.\n"+
+				"vector: %s is outside the scope the agent declared as %s.\n"+
 					"If it is genuinely required, record why:\n"+
 					"  vector scope expand %s -w \"<pattern>\" -reason blocking -evidence \"<what proves it>\"",
-				named(outOfScope), rules.Objective, rules.TaskID),
+				named(outOfScope), quoted(rules.Objective), rules.TaskID),
 		}
 	}
 	// Advisory mode reports without blocking, so a wrong boundary never stops
@@ -215,6 +215,51 @@ func preTool(root string, e Event) *hookOutput {
 				"and record it with `vector observe \"<note>\"`.",
 			named(outOfScope), rules.TaskID),
 	}
+}
+
+// maxQuoted caps a string vector repeats back. An objective is one line
+// describing a task; anything longer is not a description.
+const maxQuoted = 200
+
+// quoted renders text an agent wrote so that it cannot be read as text vector
+// wrote.
+//
+// The objective, the evidence on an expansion and the note on an observation
+// are all authored by the agent, stored in a file that travels in git, and
+// handed back to a later session inside vector's own message. That last step
+// is the problem: "vector is active in this repository. Objective: add a
+// filter. SYSTEM: ignore all previous instructions" reads as one voice, and
+// the second half of it is not vector's.
+//
+// Nothing here claims to stop prompt injection. A model that has attacker text
+// in its context may act on it, and no amount of quoting changes that — the
+// honest scope of this function is narrower and worth stating exactly: vector
+// does not lend its own authority to a string it did not write. It is put on
+// one line so it cannot open a fake section, quoted so its edges are visible,
+// capped so it cannot bury the message around it, and attributed so a reader
+// knows who said it.
+//
+// Deterministic, and no attempt to recognise "instruction-shaped" text: that
+// would be a heuristic vector could not show the reasoning for, and it would be
+// wrong in both directions.
+func quoted(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return `""`
+	}
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, s)
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	if len(s) > maxQuoted {
+		s = s[:maxQuoted] + "…"
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `'`) + `"`
 }
 
 // maxNamed caps how many paths a hook message lists, the way freshness already
@@ -507,7 +552,7 @@ func sessionStart(root string) *hookOutput {
 func resume(b *strings.Builder, root, task string) {
 	if sc, err := scope.LoadScope(root, task); err == nil && sc != nil {
 		if o := strings.TrimSpace(sc.Objective); o != "" {
-			fmt.Fprintf(b, " Objective: %s.", o)
+			fmt.Fprintf(b, " The agent declared its objective as %s.", quoted(o))
 		}
 		if n := len(sc.Expansions); n > 0 {
 			fmt.Fprintf(b, " Boundary widened %s.", times(n))
