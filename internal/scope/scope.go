@@ -106,12 +106,45 @@ func (p Policy) MergeCommands(detected detect.Commands) detect.Commands {
 func DefaultPolicy() Policy {
 	var p Policy
 	p.Scope.AlwaysForbidden = []string{
+		// Vector's own contract.
 		".vector/**",
+
+		// What the agent reads as instructions, or executes as tools. The
+		// original list covered settings and hooks and stopped there, which
+		// left every other way of durably changing what a future session
+		// believes: a planted subagent, a skill, a slash command, an MCP
+		// server standing up a filesystem tool of its own. Prompt injection
+		// reaching the agent is half the threat model, and this is where it
+		// would go to persist.
 		".claude/settings.json",
 		".claude/settings.local.json",
 		".claude/hooks/**",
+		".claude/agents/**",
+		".claude/skills/**",
+		".claude/commands/**",
+		".mcp.json",
 		".codex/hooks.json",
+		".codex/config.toml",
 		".cursor/hooks.json",
+		".cursor/mcp.json",
+
+		// Git's own executable surface. A repository-local hook runs on the
+		// developer's machine on the next commit, and .git/config can point
+		// at one.
+		".git/hooks/**",
+		".git/config",
+
+		// What decides whether git — and therefore vector — can see a file at
+		// all. The audit is built on `git diff` plus `ls-files
+		// --exclude-standard`, so anything git considers ignored is invisible
+		// to every verdict. An agent that can edit these can write outside its
+		// boundary and have the audit report IN_SCOPE forever.
+		".gitignore",
+		"**/.gitignore",
+		".git/info/exclude",
+		".gitattributes",
+
+		// Secrets.
 		".env",
 		".env.*",
 	}
@@ -151,7 +184,6 @@ type Scope struct {
 	TaskID     string      `toml:"-"`
 	Objective  string      `toml:"objective"`
 	Write      []string    `toml:"write"`
-	Forbidden  []string    `toml:"forbidden"`
 	Expansions []Expansion `toml:"expansion"`
 }
 
@@ -215,7 +247,6 @@ func BuildRuleset(p Policy, s *Scope) Ruleset {
 	r.Objective = s.Objective
 	r.TaskID = s.TaskID
 	r.Write = append(r.Write, s.EffectiveWrite()...)
-	r.Forbidden = append(r.Forbidden, s.Forbidden...)
 	r.Expansions = len(s.Expansions)
 	r.HighRisk = append([]string{}, p.Scope.HighRisk...)
 	return r
@@ -414,15 +445,6 @@ func Current(root string) string {
 		return ""
 	}
 	return id
-}
-
-// ClearCurrent forgets the active task.
-func ClearCurrent(root string) error {
-	err := os.Remove(currentFile(root))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
 }
 
 // writeFileAtomic writes via a temporary file and a rename, so a crash cannot

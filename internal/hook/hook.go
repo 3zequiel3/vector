@@ -102,13 +102,41 @@ func preTool(root string, e Event) *hookOutput {
 		return nil
 	}
 
+	// A configuration vector cannot read must not switch enforcement off.
+	//
+	// This used to return nil on either error, and that was the cheapest
+	// possible way to defeat the whole tool. One unparseable byte in
+	// policy.toml or in a scope file — a control character in an objective is
+	// enough, and so is a crash mid-append — and the hook went silent: no
+	// forbidden-path denial, no strict-mode denial, nothing, repository-wide,
+	// until a human happened to notice. The rules that exist precisely so an
+	// agent cannot weaken its own constraints were the first thing to go.
+	//
+	// Failing safe means falling back to the defaults, which still deny
+	// `.vector/**`, the agent's own settings and `.env`. Failing silent means
+	// pretending there is nothing to say. Those are not close, and the tool
+	// that refuses to call unchecked things fine has no business doing the
+	// second one.
+	//
+	// The fallback is announced, because a boundary quietly narrowed to the
+	// built-in defaults is its own kind of false confidence.
+	var broken string
 	pol, err := scope.LoadPolicy(root)
 	if err != nil {
-		return nil
+		pol, broken = scope.DefaultPolicy(), "policy.toml"
 	}
 	sc, err := scope.LoadScope(root, scope.Current(root))
 	if err != nil {
-		return nil
+		// A nil scope is a legitimate state that BuildRuleset already handles:
+		// no task boundary, only the always-forbidden rules. It is a weaker
+		// answer than the file would have given and a far stronger one than
+		// silence.
+		sc = nil
+		if broken == "" {
+			broken = "the active scope file"
+		} else {
+			broken += " and the active scope file"
+		}
 	}
 	rules := scope.BuildRuleset(pol, sc)
 	strict := pol.Mode.Enforcement == "strict"
@@ -153,9 +181,15 @@ func preTool(root string, e Event) *hookOutput {
 	// against. The first write is the moment the boundary is finally
 	// decidable, so that is where vector asks for it.
 	if !rules.Declared {
+		if broken != "" {
+			return brokenConfig(broken)
+		}
 		return undeclared(root, e, inRepo, strict)
 	}
 	if len(outOfScope) == 0 {
+		if broken != "" {
+			return brokenConfig(broken)
+		}
 		return nil
 	}
 
@@ -167,7 +201,7 @@ func preTool(root string, e Event) *hookOutput {
 				"vector: %s is outside the scope of %q.\n"+
 					"If it is genuinely required, record why:\n"+
 					"  vector scope expand %s -w \"<pattern>\" -reason blocking -evidence \"<what proves it>\"",
-				strings.Join(outOfScope, ", "), rules.Objective, rules.TaskID),
+				named(outOfScope), rules.Objective, rules.TaskID),
 		}
 	}
 	// Advisory mode reports without blocking, so a wrong boundary never stops
@@ -179,7 +213,44 @@ func preTool(root string, e Event) *hookOutput {
 				"If this belongs to the task, run `vector scope expand %s -w \"<pattern>\" "+
 				"-reason blocking -evidence \"<what proves it>\"`; if it does not, leave it "+
 				"and record it with `vector observe \"<note>\"`.",
-			strings.Join(outOfScope, ", "), rules.TaskID),
+			named(outOfScope), rules.TaskID),
+	}
+}
+
+// maxNamed caps how many paths a hook message lists, the way freshness already
+// caps its own.
+//
+// This is not cosmetic. A hook's reply is injected straight into the agent's
+// context window, and the path list is derived from the tool input — a shell
+// command with twenty thousand redirections produced a 269 KB reply, roughly
+// sixty thousand tokens of noise from one tool call. The finding is the same
+// whether it names five paths or five thousand.
+const maxNamed = 5
+
+// named renders a path list for a message, bounded.
+func named(paths []string) string {
+	if len(paths) <= maxNamed {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more",
+		strings.Join(paths[:maxNamed], ", "), len(paths)-maxNamed)
+}
+
+// brokenConfig reports that vector is running on its built-in defaults.
+//
+// It is context, never a denial. The write being judged may be perfectly
+// ordinary, and refusing it because a different file is malformed would punish
+// the wrong thing. What must not happen is silence: enforcement has quietly
+// narrowed to the defaults, and a session that is not told reads the absence of
+// complaint as approval.
+func brokenConfig(what string) *hookOutput {
+	return &hookOutput{
+		HookEventName: "PreToolUse",
+		AdditionalContext: fmt.Sprintf(
+			"vector: %s could not be parsed, so vector is enforcing its built-in "+
+				"defaults only — the declared boundary for this task is not in "+
+				"force. Forbidden paths are still denied. Run `vector doctor` to "+
+				"see what is wrong with it.", what),
 	}
 }
 
@@ -248,6 +319,20 @@ func alreadyNudged(root, session string) bool {
 // recordNudge remembers that this session has been asked, and reports whether
 // the record actually reached the disk. The caller denies only on true, so an
 // unwritable repository degrades to silence rather than to a loop.
+// maxNudged caps the session log.
+//
+// This is the one state file that had no bound at all, and it sits on the hot
+// path: every pre-tool call from a session that has not declared a scope reads
+// it whole. Measured, fifty thousand entries take the call from 6 ms to 10 ms —
+// years of use, and still the only file in the package where the project's own
+// "keep it bounded" discipline was not applied. Short-lived CI sessions, each
+// with a fresh id, get there faster than a person would.
+//
+// Two thousand is far more than any machine has live sessions. Dropping the
+// oldest costs at most one repeated ask in a session old enough to have been
+// forgotten, which is the harmless direction.
+const maxNudged = 2000
+
 func recordNudge(root, session string) bool {
 	dir := filepath.Join(root, ".vector")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -264,7 +349,44 @@ func recordNudge(root, session string) bool {
 	if err := f.Close(); err != nil {
 		return false
 	}
+	compactNudged(root)
 	return true
+}
+
+// compactNudged keeps the session log to its last maxNudged entries.
+//
+// It runs after the append rather than instead of it, so the ask this call was
+// recording is never the one that gets dropped. A compaction racing another
+// session's append can lose that append, and the cost of that is one repeated
+// "declare a scope" message — the same trade the attempt log already makes,
+// and in the same direction.
+func compactNudged(root string) {
+	path := nudgeState(root)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) <= maxNudged {
+		return
+	}
+	kept := strings.Join(lines[len(lines)-maxNudged:], "\n") + "\n"
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".nudged-*")
+	if err != nil {
+		return
+	}
+	if _, err := tmp.WriteString(kept); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return
+	}
+	if os.Chmod(tmp.Name(), 0o644) != nil || os.Rename(tmp.Name(), path) != nil {
+		os.Remove(tmp.Name())
+	}
 }
 
 // sessionKey reduces an agent's session id to something safe to keep on one

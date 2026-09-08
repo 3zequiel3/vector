@@ -434,3 +434,36 @@ func mkFile(t *testing.T, root, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestAgentSuppliedTextCannotProduceAnUnparseableScope(t *testing.T) {
+	// Go's %q is not a TOML encoder: it escapes BEL as \a and vertical tab as
+	// \v, neither of which TOML defines. One control character in an objective
+	// produced a scope file nothing could read, which everything downstream
+	// treated as "there is no boundary".
+	root := gitRepo(t)
+	nasty := "add a filter\x07 and \x0b more\x00 \"quoted\" back\\slash\ttab"
+
+	if _, err := NewScope(root, "task", nasty, []string{"src/**", "x\x07y/**"}); err != nil {
+		t.Fatalf("NewScope: %v", err)
+	}
+	if _, err := ExpandScope(root, "task", "blocking", "evidence\x07with a bell", []string{"lib/**"}, true); err != nil {
+		t.Fatalf("ExpandScope: %v", err)
+	}
+
+	sc, err := scope.LoadScope(root, "task")
+	if err != nil {
+		t.Fatalf("the scope file does not parse: %v", err)
+	}
+	if sc == nil {
+		t.Fatal("LoadScope returned nothing for a scope that exists")
+	}
+	if strings.ContainsAny(sc.Objective, "\x07\x0b\x00") {
+		t.Errorf("objective = %q, want control characters dropped", sc.Objective)
+	}
+	if !strings.Contains(sc.Objective, `"quoted"`) || !strings.Contains(sc.Objective, `back\slash`) {
+		t.Errorf("objective = %q, want ordinary punctuation preserved", sc.Objective)
+	}
+	if len(sc.Expansions) != 1 {
+		t.Errorf("Expansions = %v, want the appended block to have parsed", sc.Expansions)
+	}
+}

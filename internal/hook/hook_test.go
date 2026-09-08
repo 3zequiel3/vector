@@ -3,6 +3,7 @@ package hook
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -930,5 +931,113 @@ func TestAgoRefusesToCallAFutureTimestampRecent(t *testing.T) {
 	// broken timestamp, and must not produce an alarming sentence.
 	if got := ago(time.Now().Add(2 * time.Second)); got != "just now" {
 		t.Errorf("ago(+2s) = %q, want ordinary jitter to stay quiet", got)
+	}
+}
+
+func TestAnUnreadableConfigFallsBackToTheDefaultsInsteadOfGoingSilent(t *testing.T) {
+	// The cheapest possible way to defeat the whole tool, before this: one
+	// unparseable byte anywhere in policy.toml or a scope file and the hook
+	// returned nothing at all — no forbidden-path denial, no strict-mode
+	// denial, repository-wide, until a human happened to notice. The rules
+	// that exist so an agent cannot weaken its own constraints were the first
+	// thing to go.
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/policy.toml", "this is not = = = toml\n")
+
+	for _, path := range []string{".env", ".claude/settings.json", ".vector/policy.toml"} {
+		got := runEvent(t, root, "pre-tool", writePayload(root, "s1", path))
+		if got.PermissionDecision != "deny" {
+			t.Errorf("%s: decision = %q, want deny from the built-in defaults", path, got.PermissionDecision)
+		}
+	}
+}
+
+func TestAnUnreadableScopeStillEnforcesTheForbiddenPaths(t *testing.T) {
+	// Same rule one level down: a corrupt scope file means "no task boundary",
+	// which BuildRuleset already handles, not "no rules at all".
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/scope/task.toml", "objective = \"unterminated\n")
+	mk(".vector/current", "task\n")
+
+	got := runEvent(t, root, "pre-tool", writePayload(root, "s1", ".env"))
+	if got.PermissionDecision != "deny" {
+		t.Errorf("decision = %q, want deny", got.PermissionDecision)
+	}
+}
+
+func TestABrokenConfigIsSaidOutLoud(t *testing.T) {
+	// Falling back quietly would be its own false confidence: the declared
+	// boundary is not in force, and a session told nothing reads the absence
+	// of a complaint as approval.
+	root, mk := newRepoWithoutScope(t)
+	mk(".vector/policy.toml", "not = = = toml\n")
+	mk("src/ok.go", "package ok\n")
+
+	got := runEvent(t, root, "pre-tool", writePayload(root, "s1", "src/ok.go"))
+	if !strings.Contains(got.AdditionalContext, "could not be parsed") {
+		t.Errorf("context = %q, want the broken config named", got.AdditionalContext)
+	}
+	if !strings.Contains(got.AdditionalContext, "vector doctor") {
+		t.Errorf("context = %q, want it to say how to find out what is wrong", got.AdditionalContext)
+	}
+	if got.PermissionDecision != "" {
+		t.Errorf("decision = %q, want no denial — the write itself is ordinary", got.PermissionDecision)
+	}
+}
+
+func TestAHookMessageDoesNotGrowWithTheToolInput(t *testing.T) {
+	// A hook's reply is injected straight into the agent's context window, and
+	// the path list came from the tool input. A shell command with twenty
+	// thousand redirections produced a 269 KB reply — about sixty thousand
+	// tokens of noise from one tool call. The finding is the same whether it
+	// names five paths or five thousand.
+	root := newRepo(t, []string{"src/**"})
+	var cmd strings.Builder
+	for i := 0; i < 3000; i++ {
+		fmt.Fprintf(&cmd, "echo x > out%d.txt; ", i)
+	}
+	payload := `{"cwd":"` + root + `","session_id":"s1","tool_name":"Bash",` +
+		`"tool_input":{"command":"` + cmd.String() + `"}}`
+
+	got := runEvent(t, root, "pre-tool", payload)
+	if len(got.AdditionalContext) > 2000 {
+		t.Errorf("reply is %d bytes for a %d byte command; it must not scale with the input",
+			len(got.AdditionalContext), cmd.Len())
+	}
+	if !strings.Contains(got.AdditionalContext, "more") {
+		t.Errorf("context = %q, want the remainder counted rather than dropped", got.AdditionalContext)
+	}
+}
+
+func TestEveryOperandOfADestructiveCommandIsAWriteTarget(t *testing.T) {
+	// This returned only the first operand until it was measured, which made
+	// `rm -rf decoy.txt .vector/policy.toml` report decoy.txt and nothing
+	// else — a one-line way past every forbidden-path rule, in the function
+	// whose own table says "every non-flag argument is written".
+	tests := []struct {
+		command string
+		want    []string
+	}{
+		{"rm -rf decoy.txt .vector/policy.toml", []string{"decoy.txt", ".vector/policy.toml"}},
+		{"touch src/ok.go .env", []string{"src/ok.go", ".env"}},
+		{"chmod 777 a.go b.go c.go", []string{"777", "a.go", "b.go", "c.go"}},
+		{"mkdir -p one two", []string{"one", "two"}},
+		// mv and cp write only their destination: a multi-source copy ends in
+		// a directory, and a directory covers everything it receives.
+		{"mv a.go b.go dest/", []string{"dest/"}},
+		{"cp a.go b.go dest/", []string{"dest/"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := WriteTargets(tt.command)
+			if len(got) != len(tt.want) {
+				t.Fatalf("WriteTargets(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("WriteTargets(%q)[%d] = %q, want %q", tt.command, i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }

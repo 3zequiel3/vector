@@ -1,0 +1,77 @@
+# The gate that was missing.
+#
+# The only workflow in this repository fired on a tag and built release
+# binaries. Nothing ran the test suite on a push or a pull request, so 225
+# tests existed and none of them could stop anything: a change that broke every
+# one of them, or that did not compile, reached main unopposed.
+#
+# A tool whose entire argument is that a claim needs evidence behind it cannot
+# be a repository where "the tests pass" is a claim nobody checks.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The suite builds real git repositories and, in gitx, compares
+          # against a base ref. A shallow clone is enough for what the tests
+          # create themselves, but not for anything that walks history.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # git is the only hard dependency vector has, and the tests drive it
+      # directly. Recording the version makes a failure that turns out to be a
+      # git behaviour change readable in the log rather than a mystery.
+      - name: environment
+        run: |
+          go version
+          git --version
+
+      # Formatting is checked rather than applied. A workflow that rewrites the
+      # tree is a workflow that hides the fact nobody ran gofmt.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race because the state files under .vector/ are written by concurrent
+      # sessions in the field, and the reasoning about which races are harmless
+      # is currently argued in comments rather than demonstrated.
+      # -count=1 defeats the test cache: a green run has to mean the tests ran.
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      # The thing users are told to run. If the binary does not build, the
+      # install instructions in the README are wrong.
+      - name: build
+        run: go build ./cmd/vector
+
+      # vector auditing vector. It is the only end-to-end check that the
+      # commands the README documents actually work on a real repository, and
+      # it costs one second.
+      - name: dogfood
+        run: |
+          go build -o /tmp/vector ./cmd/vector
+          /tmp/vector doctor
+          /tmp/vector audit

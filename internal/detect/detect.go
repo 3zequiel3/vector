@@ -14,12 +14,14 @@
 package detect
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Version keeps the three locally knowable truths apart. An empty field means
@@ -430,12 +432,26 @@ func rel(base, target string) string {
 
 // toolVersion asks a tool for its own version. A missing tool is not an error:
 // it is the absence of installed evidence, which is itself worth reporting.
+// probeTimeout bounds a version probe.
+//
+// These run on every SessionStart, and they invoke whatever the developer has
+// on PATH — which in practice is often a version-manager shim (nvm, pyenv,
+// rbenv, a corporate npm wrapper) that may itself reach the network. `doctor`
+// learned this and wrapped its own probes; the hot-path caller never did, so a
+// wedged shim hung every session start with no limit at all.
+//
+// Two seconds, matching doctor. A version string is a nice-to-have; it is not
+// worth a session that will not start.
+const probeTimeout = 2 * time.Second
+
 func toolVersion(bin string, args ...string) string {
 	path, err := exec.LookPath(bin)
 	if err != nil {
 		return ""
 	}
-	out, err := exec.Command(path, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, args...).Output()
 	if err != nil {
 		return ""
 	}

@@ -659,15 +659,20 @@ func TestF(t *testing.T) {
 	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {}\n")
 	commitAll(t, root)
 
-	// Against HEAD there is nothing to see, and that is the honest answer to
-	// the question "what has this session done".
+	// Against HEAD there is nothing to see. The honest answer is not VERIFIED
+	// — the checks passed about the repository, not about a change — and this
+	// is the shape a CI run without -base has: a clean checkout where every
+	// diff is empty however much the branch did.
 	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Verdict != Verified {
-		t.Errorf("against HEAD: verdict = %s (%s), want VERIFIED on a clean tree",
+	if rep.Verdict != PartiallyVerified {
+		t.Errorf("against HEAD: verdict = %s (%s), want PARTIALLY_VERIFIED on a clean tree",
 			rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "nothing has changed") {
+		t.Errorf("reason = %q, want it to say why", rep.Reason)
 	}
 
 	// Against the branch point it is the whole change, and it is found.
@@ -825,5 +830,80 @@ func TestABroadBoundaryOverOrdinarySourceIsStillVerified(t *testing.T) {
 	}
 	if rep.Verdict != Verified {
 		t.Errorf("verdict = %s (%s), want VERIFIED", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestBothTheGuttedSuiteAndTheUndeclaredRiskAreReported(t *testing.T) {
+	// The compound adversarial shape: the change removes its own assertions
+	// AND drops a migration under a boundary that was never about migrations.
+	// The precedence chain returns on the first rule that fires, so the second
+	// finding — a fact about a migration — used to vanish entirely.
+	root := newRepo(t)
+	mk(t, root, "x_test.go", `package x
+
+import "testing"
+
+func TestF(t *testing.T) {
+	if F() != 1 {
+		t.Error("F broke")
+	}
+	if F() < 0 {
+		t.Error("F went negative")
+	}
+}
+`)
+	mk(t, root, ".vector/policy.toml", "[mode]\nenforcement = \"advisory\"\n")
+	mk(t, root, ".vector/scope/task.toml", "objective = \"tweak a button\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	mk(t, root, "x_test.go", "package x\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) {}\n")
+	mk(t, root, "migrations/0003_drop.sql", "DROP TABLE customers;\n")
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict != PartiallyVerified {
+		t.Fatalf("verdict = %s (%s), want PARTIALLY_VERIFIED", rep.Verdict, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "x_test.go") {
+		t.Errorf("reason = %q, missing the gutted suite", rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "migrations/0003_drop.sql") {
+		t.Errorf("reason = %q, missing the undeclared migration", rep.Reason)
+	}
+
+	// And a person reading the default text output must see it too. verify
+	// embeds the whole audit report and used to print none of it.
+	var b strings.Builder
+	if err := rep.WriteText(&b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "undeclared") ||
+		!strings.Contains(b.String(), "migrations/0003_drop.sql") {
+		t.Errorf("text output = %q, want the undeclared path shown", b.String())
+	}
+}
+
+func TestACleanTreeIsNotAVerifiedChange(t *testing.T) {
+	// NO_CHANGES and VERIFIED in the same report would be the audit and the
+	// verdict disagreeing about one tree. The checks passed about the
+	// repository; no work was verified because none was done.
+	root := newRepo(t)
+	mk(t, root, ".vector/scope/task.toml", "objective = \"o\"\nwrite = [\"**\"]\n")
+	mk(t, root, ".vector/current", "task\n")
+	commitAll(t, root)
+
+	rep, err := Run(Options{Dir: root, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verdict == Verified {
+		t.Errorf("verdict = VERIFIED with scope status %s; the two disagree about the same tree",
+			rep.Scope.Status)
+	}
+	if !strings.Contains(rep.Reason, "nothing has changed") {
+		t.Errorf("reason = %q, want it to name the reason", rep.Reason)
 	}
 }

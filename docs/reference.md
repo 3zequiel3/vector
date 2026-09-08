@@ -383,7 +383,7 @@ tolerate — `level` was never a closed set of two.
 | `.vector/scope/<id>.toml` | one task's declared boundary, plus the appended record of every expansion and its evidence | **yes** — this is the reviewable artifact | the agent writes it via `scope new` / `scope expand`; you read it |
 | `.vector/observations.md` | append-only log of what the agent noticed and did not act on | **yes** | the agent appends; nothing rewrites it |
 | `.vector/current` | the active task id, so `audit` and the hooks work without `-task` | **no** — gitignored | per-developer working state, like `.git/HEAD`. Committing it would make every teammate's checkout fight over whose task is current |
-| `.vector/nudged` | which sessions have already been asked to declare a scope, so the ask happens once | **no** — gitignored | per-developer working state |
+| `.vector/nudged` | which sessions have already been asked to declare a scope, so the ask happens once | **no** — gitignored | per-developer working state; kept to the last 2000 sessions, because the pre-tool hook reads it whole |
 | `.vector/attempts` | one line per `verify` run: task, verdict, size of the diff. Answers whether a task is going in circles | **no** — gitignored | compacted at 64 KiB to the last 200 records |
 | `.vector/verdicts` | the last verdict per task, with a git blob hash for every file it covered, so a verdict can be told from a stale one | **no** — gitignored | at most 8 tasks, capped at 256 KiB |
 | `.vector/.gitignore` | lists the four files above that stay out of git | **yes** | `init` adds missing entries and never rewrites the file, so a repository set up before an entry existed still gets it |
@@ -391,12 +391,17 @@ tolerate — `level` was never a closed set of two.
 
 ### The two path lists in `[scope]`
 
-`always_forbidden` is denied, in every mode, hook and sandbox alike. The
-defaults cover `.vector/**`, `.claude/settings*.json`, `.claude/hooks/**`,
-`.codex/hooks.json`, `.cursor/hooks.json`, `.env` and `.env.*`. The first two
-matter most: an agent that can edit the configuration constraining it is not
-constrained, and `vector doctor` reports a policy that does not cover
-`.vector/` as a **failure**, not a warning.
+`always_forbidden` is denied, in every mode, hook and sandbox alike. It answers
+one question — what could an agent write that would weaken the thing
+constraining it? — and the defaults fall into four groups:
+
+| Group | Paths | Why |
+| --- | --- | --- |
+| vector's own contract | `.vector/**` | an agent that can edit the rules is not constrained by them. `vector doctor` reports a policy not covering this as a **failure**, not a warning |
+| what the agent reads as instructions, or runs as tools | `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/**`, `.claude/agents/**`, `.claude/skills/**`, `.claude/commands/**`, `.mcp.json`, `.codex/hooks.json`, `.codex/config.toml`, `.cursor/hooks.json`, `.cursor/mcp.json` | a planted subagent, skill or MCP server durably changes what a *future* session believes and can do. Prompt injection reaching the agent is half the threat model, and this is where it would go to persist |
+| git's executable surface | `.git/hooks/**`, `.git/config` | a repository-local hook runs on the next commit, on the developer's machine |
+| what decides whether git can see a file at all | `.gitignore`, `**/.gitignore`, `.git/info/exclude`, `.gitattributes` | every verdict is built on `git diff` and `ls-files --exclude-standard`. Anything git considers ignored is invisible to all of them, so an agent that can edit these can write outside its boundary and have the audit report `IN_SCOPE` forever |
+| secrets | `.env`, `.env.*` | |
 
 `high_risk` is never denied. It names the paths that are written deliberately
 or not at all — a migration, a workflow, a terraform plan, a private key. They

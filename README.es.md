@@ -9,7 +9,7 @@ vector lo nota, te lo dice y —donde puede— lo frena antes.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-225-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-233-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -279,7 +279,7 @@ PARTIALLY_VERIFIED — passed: lint, test, build — but no scope was declared,
   ok   build      go build ./...   (254ms)
 ```
 
-Dos reglas deciden el veredicto:
+Cuatro reglas deciden el veredicto, y cada una cierra una forma distinta de parecer terminado:
 
 **Nada es `VERIFIED` si no corrió algo.** Un repositorio que no declara comando de tests no demostró que funciona, por más verde que esté el resto. "No chequeado" nunca se vuelve "está bien".
 
@@ -430,7 +430,7 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 225 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 233 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
@@ -450,7 +450,7 @@ realmente en cada agente. Está en inglés, como el resto de los artefactos téc
 ## Desarrollo
 
 ```bash
-go test ./...        # 225 tests
+go test ./...        # 233 tests
 go vet ./...
 gofmt -l .
 ```

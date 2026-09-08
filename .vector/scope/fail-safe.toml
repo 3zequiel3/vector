@@ -1,0 +1,19 @@
+objective = "vector fails safe, not silent: a config it cannot read must not switch enforcement off"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/**",
+  "cmd/vector/**",
+  ".github/workflows/**",
+]
+
+[[expansion]]
+at = "2026-09-08T02:40:44Z"
+reason = "invariant"  # violates an explicit project invariant
+evidence = "This change makes three documented claims false: both READMEs say 'Two rules decide the verdict' while decide() now has four; docs/reference.md lists an always_forbidden set that no longer matches DefaultPolicy after eleven paths were added; and the nudged state file is now bounded where the file table says nothing. Shipping code whose documentation describes different behaviour is the failure this project exists to refuse."
+write = [
+  "docs/**",
+  "README.md",
+  "README.es.md",
+]

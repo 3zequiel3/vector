@@ -5,13 +5,20 @@
 // report "in scope" about a change that does not compile — which is the exact
 // shape of false confidence this tool exists to refuse.
 //
-// Two rules govern the verdict:
+// Four rules govern the verdict, and each one closes a different way of
+// looking finished:
 //
 //   - Nothing is VERIFIED unless something actually ran. "Not checked" never
 //     becomes "fine".
 //   - Scope outranks evidence. A change that passes every test but touched
 //     files nobody declared is still out of scope; passing tests do not
 //     retroactively authorize the work.
+//   - Nothing is VERIFIED if the change edited its own judge. A suite whose
+//     assertions this change deleted exits zero, and that zero is not evidence
+//     about anything.
+//   - A boundary that is not about migrations does not authorize one. A
+//     dangerous path no declared pattern was about was never authorized; it
+//     was only never excluded.
 package verify
 
 import (
@@ -266,10 +273,23 @@ func decide(s audit.Report, checks []Check, delta suite.Delta, weakened bool) (V
 	if len(ran) == 0 {
 		return Unverified, "nothing ran; the project declares no verification commands"
 	}
+	// A clean tree has nothing to verify. The checks ran and may well have
+	// passed, but they passed about the repository, not about a change — and
+	// saying VERIFIED here would put the audit's own NO_CHANGES and this
+	// verdict in one report, disagreeing about the same tree.
+	//
+	// It sits after "nothing ran", which is the stronger statement: a run that
+	// checked nothing is unverified whether or not the tree moved.
+	if s.Status == audit.NoChanges {
+		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") +
+			" — but nothing has changed, so this says the repository is healthy," +
+			" not that any work was verified"
+	}
 	// A project with no test command has not been shown to work, however green
 	// the rest is. Saying VERIFIED here would be the claim this tool refuses.
 	if !contains(ran, "test") {
-		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") + " — but no test command is declared"
+		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") +
+			" — but no test command is declared" + andUndeclared(s)
 	}
 	// The twin of the rule above, and it is checked here because it only means
 	// anything once the test command has actually run: a passing suite that
@@ -283,7 +303,7 @@ func decide(s audit.Report, checks []Check, delta suite.Delta, weakened bool) (V
 		if s.Status == audit.NoScopeDeclared {
 			reason += "; and no scope was declared, so conformance was not checked either"
 		}
-		return PartiallyVerified, reason
+		return PartiallyVerified, reason + andUndeclared(s)
 	}
 	if s.Status == audit.NoScopeDeclared {
 		return PartiallyVerified, "passed: " + strings.Join(ran, ", ") + " — but no scope was declared, so conformance was not checked"
@@ -309,6 +329,26 @@ func decide(s audit.Report, checks []Check, delta suite.Delta, weakened bool) (V
 			", which no declared pattern was about"
 	}
 	return Verified, "in scope; passed: " + strings.Join(ran, ", ")
+}
+
+// andUndeclared appends the undeclared-risk finding to a reason that was
+// already going to be returned for some other cause.
+//
+// The precedence chain returns on the first rule that fires, which meant a
+// change that both gutted its tests and dropped an undeclared migration
+// reported only the first of those — and the second is a fact about a
+// migration. Two findings that are both true are both reported, the way the
+// weakened-suite and no-scope pair already were.
+func andUndeclared(s audit.Report) string {
+	if len(s.Undeclared) == 0 {
+		return ""
+	}
+	paths := make([]string, 0, len(s.Undeclared))
+	for _, f := range s.Undeclared {
+		paths = append(paths, f.Path)
+	}
+	return "; and it touched " + strings.Join(paths, ", ") +
+		", which no declared pattern was about"
 }
 
 // run executes one command under a timeout. A hung suite must not hang vector.
@@ -390,6 +430,24 @@ func (r Report) WriteText(w io.Writer) error {
 		fmt.Fprintf(&b, "\n%s\n", indent(out))
 	}
 
+	// The dangerous paths this change touched, whatever the verdict.
+	//
+	// `vector audit` prints these on every status because a line that appears
+	// only when something else has gone wrong is missing from every run where
+	// it mattered. `vector verify` embeds the full audit report and then
+	// printed none of it, so the only way an undeclared migration reached a
+	// person running the default text output was through the one sentence in
+	// the reason — which the precedence chain could starve.
+	for _, p := range r.Scope.HighRisk {
+		mark := "high risk"
+		for _, f := range r.Scope.Undeclared {
+			if f.Path == p {
+				mark = "undeclared"
+			}
+		}
+		fmt.Fprintf(&b, "  %-14s %s\n", mark, p)
+	}
+
 	// The retry signal goes last: it is context about the shape of the work,
 	// not a result of this run, and putting it above the findings would push
 	// the thing the reader asked for down the page.
@@ -423,6 +481,3 @@ func indent(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
-// unused keeps the scope import honest if the verdict logic is trimmed later.
-var _ = scope.Allowed

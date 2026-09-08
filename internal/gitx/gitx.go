@@ -7,6 +7,7 @@ package gitx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNotARepo reports that the given directory is not inside a git worktree.
@@ -197,13 +199,32 @@ func addPaths(set map[string]struct{}, out string) {
 	}
 }
 
+// gitTimeout bounds every git call.
+//
+// The hook runs once per tool call and every event of it reaches git. With no
+// bound, a repository on an unresponsive network mount, or a git that wedges
+// for any of the ordinary reasons git wedges, stops the agent's tool call
+// forever — and the package that made a point of not hanging on a test suite
+// was hanging with no limit in the one place it runs most.
+//
+// Thirty seconds is not a performance budget. Every call here is name-only or
+// numstat and returns in milliseconds on any repository anyone works in; this
+// is the line past which the answer is "git is not coming back" rather than
+// "git is slow", and vector would rather say nothing than hold the session.
+const gitTimeout = 30 * time.Second
+
 func run(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s did not return within %s", args[0], gitTimeout)
+		}
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil

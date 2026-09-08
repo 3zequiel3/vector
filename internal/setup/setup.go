@@ -229,7 +229,7 @@ func kvc(b *strings.Builder, key, detected, override string) {
 	if detected != "" {
 		fmt.Fprintf(b, "# %s = %q  (detected, overridden below)\n", key, detected)
 	}
-	fmt.Fprintf(b, "%s = %q\n", key, override)
+	fmt.Fprintf(b, "%s = %s\n", key, tomlString(override))
 }
 
 func kvs(b *strings.Builder, key, val string) {
@@ -237,7 +237,7 @@ func kvs(b *strings.Builder, key, val string) {
 		fmt.Fprintf(b, "# %s = \"\"  (no local evidence)\n", key)
 		return
 	}
-	fmt.Fprintf(b, "%s = %q\n", key, val)
+	fmt.Fprintf(b, "%s = %s\n", key, tomlString(val))
 }
 
 func kv(b *strings.Builder, key string, vals []string) {
@@ -247,7 +247,7 @@ func kv(b *strings.Builder, key string, vals []string) {
 	}
 	fmt.Fprintf(b, "%s = [\n", key)
 	for _, v := range vals {
-		fmt.Fprintf(b, "  %q,\n", v)
+		fmt.Fprintf(b, "  %s,\n", tomlString(v))
 	}
 	b.WriteString("]\n")
 }
@@ -301,6 +301,46 @@ func Inventory(root string, patterns []string) (files []string, total int) {
 	return files, total
 }
 
+// tomlString renders an agent-supplied string as a TOML basic string.
+//
+// Go's %q is not a TOML encoder, and the gap is not academic. It escapes BEL as
+// \a and vertical tab as \v, neither of which TOML defines, so a single
+// control character anywhere in an objective or a piece of evidence produced a
+// scope file that would not parse. Everything downstream then read that as
+// "there is no boundary" — which, until the hook learned to fall back to the
+// defaults, silently switched the whole tool off.
+//
+// Control characters are dropped rather than escaped. They carry no meaning in
+// an objective a human is going to read, TOML forbids the raw ones in a basic
+// string anyway, and a description of a task is not the place to preserve a
+// bell. Tab and newline survive as their defined escapes, because a
+// multi-line piece of evidence is a reasonable thing to write.
+func tomlString(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range v {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // NewScope writes a task scope file, refusing to clobber an existing one.
 func NewScope(root, taskID, objective string, write []string) (string, error) {
 	if taskID == "" {
@@ -319,7 +359,7 @@ func NewScope(root, taskID, objective string, write []string) (string, error) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "objective = %q\n\n", objective)
+	fmt.Fprintf(&b, "objective = %s\n\n", tomlString(objective))
 	b.WriteString("# Paths this task may write. Everything else is out of scope,\n")
 	b.WriteString("# and a boundary that is never drawn cannot be crossed.\n")
 	kv(&b, "write", write)
@@ -365,16 +405,22 @@ func ExpandScope(root, taskID, reason, evidence string, write []string, requireE
 	var b strings.Builder
 	b.WriteString("\n[[expansion]]\n")
 	fmt.Fprintf(&b, "at = %q\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "reason = %q  # %s\n", reason, scope.ExpansionReasons[reason])
-	fmt.Fprintf(&b, "evidence = %q\n", strings.TrimSpace(evidence))
+	fmt.Fprintf(&b, "reason = %s  # %s\n", tomlString(reason), scope.ExpansionReasons[reason])
+	fmt.Fprintf(&b, "evidence = %s\n", tomlString(strings.TrimSpace(evidence)))
 	kv(&b, "write", write)
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	// Read, append in memory, write atomically.
+	//
+	// This appended straight to the open file, which is the one writer in this
+	// package that did not. A crash, a full disk or a killed process partway
+	// through left a truncated [[expansion]] block — an unparseable scope, and
+	// therefore a task whose boundary silently stopped being enforced. The
+	// cost of doing it properly is reading a file that is never large.
+	old, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.WriteString(b.String()); err != nil {
+	if err := writeAtomic(path, string(old)+b.String()); err != nil {
 		return "", err
 	}
 	return rel(root, path), nil

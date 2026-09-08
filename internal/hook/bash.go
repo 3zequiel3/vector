@@ -39,7 +39,9 @@ func WriteTargets(command string) []string {
 				add(target)
 			}
 		}
-		add(commandTarget(args))
+		for _, t := range commandTarget(args) {
+			add(t)
+		}
 	}
 	return out
 }
@@ -88,14 +90,14 @@ var writers = map[string]writerKind{
 
 // commandTarget returns a single representative destination for the command, or
 // "" when the command does not write by itself.
-func commandTarget(args []string) string {
+func commandTarget(args []string) []string {
 	name := args[0]
 	if i := strings.LastIndexByte(name, '/'); i >= 0 {
 		name = name[i+1:]
 	}
 	kind, known := writers[name]
 	if !known {
-		return ""
+		return nil
 	}
 
 	var operands []string
@@ -114,19 +116,29 @@ func commandTarget(args []string) string {
 		operands = append(operands, a)
 	}
 	if len(operands) == 0 {
-		return ""
+		return nil
 	}
 
 	switch kind {
 	case inPlaceLast:
 		if !inPlace {
-			return ""
+			return nil
 		}
-		return operands[len(operands)-1]
+		return operands[len(operands)-1:]
 	case lastArg:
-		return operands[len(operands)-1]
+		// mv, cp, install, ln: only the destination is written. A multi-source
+		// copy ends in a directory, and a directory covers everything it
+		// receives, so the last operand is still the whole answer.
+		return operands[len(operands)-1:]
 	default:
-		return operands[0]
+		// allArgs: rm, touch, chmod and friends act on every operand.
+		//
+		// This returned operands[0] until it was measured, which meant
+		// `rm -rf decoy.txt .vector/policy.toml` was reported as touching
+		// decoy.txt and nothing else — a one-line, no-exploit way past every
+		// forbidden-path rule, in the exact function whose own table says
+		// "every non-flag argument is written".
+		return operands
 	}
 }
 
