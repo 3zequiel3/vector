@@ -47,6 +47,26 @@ func sandboxTranslate(pattern string) string {
 	return "./" + p
 }
 
+// SandboxForbidden returns the subset of policy protections that can safely be
+// handed to Claude's OS sandbox. Git's ignore metadata is deliberately kept
+// out of this list: Claude's sandbox has behaved as if denying writes to these
+// files also denied reads on some platforms/configurations. Git must be able
+// to read them or every status/diff becomes incomplete and Vector can report a
+// false inventory of changes. The hook still protects these paths before
+// writes, using the complete policy ruleset.
+func SandboxForbidden(forbidden []string) []string {
+	out := make([]string, 0, len(forbidden))
+	for _, pattern := range forbidden {
+		switch strings.TrimPrefix(strings.TrimSpace(pattern), "./") {
+		case ".gitignore", "**/.gitignore", ".git/info/exclude", ".gitattributes":
+			continue
+		default:
+			out = append(out, pattern)
+		}
+	}
+	return out
+}
+
 // InstallClaudeSandbox turns the sandbox on and denies writes to the paths the
 // policy forbids.
 //

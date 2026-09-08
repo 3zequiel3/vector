@@ -242,7 +242,7 @@ func runInit(args []string) int {
 	}
 
 	if res.Policy.Mode.Sandbox {
-		sr, err := setup.InstallClaudeSandbox(root, res.Policy.Scope.AlwaysForbidden)
+		sr, err := setup.InstallClaudeSandbox(root, setup.SandboxForbidden(res.Policy.Scope.AlwaysForbidden))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\nvector: sandbox not configured: %v\n", err)
 			return exitUsage
@@ -282,7 +282,7 @@ func runUninstall(args []string) int {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
 		return exitUsage
 	}
-	sr, err := setup.RemoveClaudeSandbox(root, pol.Scope.AlwaysForbidden)
+	sr, err := setup.RemoveClaudeSandbox(root, setup.SandboxForbidden(pol.Scope.AlwaysForbidden))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vector: %v\n", err)
 		return exitUsage

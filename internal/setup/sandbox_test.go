@@ -46,6 +46,22 @@ func TestTranslateAnchorsAtTheProjectRoot(t *testing.T) {
 	}
 }
 
+func TestSandboxForbiddenLeavesGitMetadataReadable(t *testing.T) {
+	got := SandboxForbidden([]string{
+		".vector/**", ".gitignore", "**/.gitignore", ".git/info/exclude",
+		".gitattributes", ".env", ".claude/settings.json",
+	})
+	want := []string{".vector/**", ".env", ".claude/settings.json"}
+	if len(got) != len(want) {
+		t.Fatalf("SandboxForbidden() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SandboxForbidden()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSandboxTurnsOnAndDeniesTheForbiddenPaths(t *testing.T) {
 	root := newRepo(t)
 	if _, err := InstallClaudeSandbox(root, forbidden()); err != nil {
