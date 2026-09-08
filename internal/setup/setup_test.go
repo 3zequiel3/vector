@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -317,5 +319,118 @@ func TestInitPreservesACommandOverride(t *testing.T) {
 	// A command nobody overrode must still be regenerated as a comment.
 	if pol.Commands.Test != "" {
 		t.Errorf("re-init declared an override nobody asked for: Test = %q", pol.Commands.Test)
+	}
+}
+
+// gitRepo is a real repository, because Inventory asks git what exists and a
+// stub would test the stub.
+func gitRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return root
+}
+
+func TestInventoryListsWhatAlreadyLivesInTheBoundary(t *testing.T) {
+	// The whole of vector's answer to an agent about to rebuild something the
+	// repository already has: at the one moment it has said where it will
+	// write and has not written yet, tell it what is there.
+	root := gitRepo(t)
+	for _, f := range []string{
+		"src/import/CustomerValidator.ts",
+		"src/import/RecordParser.ts",
+		"src/dashboard/Filter.tsx",
+	} {
+		mkFile(t, root, f, "export const x = 1\n")
+	}
+
+	files, total := Inventory(root, []string{"src/import/**"})
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 — only the declared boundary", total)
+	}
+	if len(files) != 2 || files[0] != "src/import/CustomerValidator.ts" {
+		t.Errorf("files = %v, want the two importer files", files)
+	}
+}
+
+func TestInventoryLeavesVectorsOwnFootprintOut(t *testing.T) {
+	// A wider exclusion than the audit makes, and deliberately so: the audit
+	// reports a change to policy.toml because editing the enforcement contract
+	// is the event it exists to surface. "There is a policy.toml" tells an
+	// agent nothing it can use.
+	root := gitRepo(t)
+	if _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	mkFile(t, root, "src/a.ts", "export const a = 1\n")
+
+	files, total := Inventory(root, []string{"**"})
+	for _, f := range files {
+		if strings.HasPrefix(f, ".vector/") {
+			t.Errorf("files = %v, want vector's own files left out", files)
+		}
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want only the project's own file", total)
+	}
+}
+
+func TestInventoryCapsALongList(t *testing.T) {
+	// A list nobody reads puts the neighbourhood in front of the agent no
+	// better than no list. Past the cap the honest answer is the count, and
+	// the caller says the boundary is probably broader than the task.
+	root := gitRepo(t)
+	for i := 0; i < maxInventory+10; i++ {
+		mkFile(t, root, fmt.Sprintf("src/f%02d.ts", i), "export const x = 1\n")
+	}
+
+	files, total := Inventory(root, []string{"src/**"})
+	if total != maxInventory+10 {
+		t.Errorf("total = %d, want every file counted", total)
+	}
+	if len(files) != maxInventory {
+		t.Errorf("len(files) = %d, want it capped at %d", len(files), maxInventory)
+	}
+}
+
+func TestInventoryOnEmptyGround(t *testing.T) {
+	// A boundary over ground that does not exist yet is the ordinary case for
+	// a new feature, and must not be reported as a failure.
+	root := gitRepo(t)
+	mkFile(t, root, "src/a.ts", "export const a = 1\n")
+
+	files, total := Inventory(root, []string{"src/reports/**"})
+	if total != 0 || len(files) != 0 {
+		t.Errorf("Inventory = %v (%d), want nothing on empty ground", files, total)
+	}
+}
+
+func TestInventoryOutsideARepositorySaysNothing(t *testing.T) {
+	// git is the only source of truth here. Without it there is no answer,
+	// and inventing one would be worse than staying quiet.
+	files, total := Inventory(t.TempDir(), []string{"**"})
+	if files != nil || total != 0 {
+		t.Errorf("Inventory = %v (%d), want silence outside a repository", files, total)
+	}
+}
+
+func mkFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

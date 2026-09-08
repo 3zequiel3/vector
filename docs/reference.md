@@ -161,6 +161,30 @@ The id may not contain `/`, `\` or `.`. Flags must come after the id: Go's flag
 parser stops at the first positional argument, so `-w` written before the id
 would be swallowed. Exit 0, or 2 on any of the above.
 
+It answers the boundary with what already lives inside it:
+
+```console
+$ vector scope new client-import -o "import clients from CSV" -w "src/import/**"
+.vector/scope/client-import.toml written
+  5 file(s) already live inside this boundary — read before you add to it:
+    src/import/CustomerValidator.ts
+    src/import/RecordParser.ts
+    ...
+```
+
+Be clear about what that is. **It detects nothing.** vector cannot tell that a
+new `ClientValidationService` is the `CustomerValidator` that was already there
+— that needs a symbol index, which is state vector would own and git would not
+give it, and which is the line between a control layer and a framework. This
+removes the excuse instead, at the one moment it can change anything: the agent
+has said where it intends to write and has not written yet.
+
+It is also advice to a model, which every measurement in this project's README
+says is the weakest class of control there is. It is here because it costs one
+`git ls-files`, not because it will reliably work. Past 25 files it prints the
+count alone and says the boundary is probably broader than the task. `scope
+expand` does the same for the ground it just grew onto.
+
 ### `vector scope expand <id> -w <pattern>`
 
 Widens a boundary by **appending** an `[[expansion]]` block — the original

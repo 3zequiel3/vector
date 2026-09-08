@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/3zequiel3/vector/internal/detect"
+	"github.com/3zequiel3/vector/internal/gitx"
 	"github.com/3zequiel3/vector/internal/scope"
 )
 
@@ -249,6 +250,55 @@ func kv(b *strings.Builder, key string, vals []string) {
 		fmt.Fprintf(b, "  %q,\n", v)
 	}
 	b.WriteString("]\n")
+}
+
+// maxInventory is how many existing files a boundary is answered with.
+//
+// The point is to put the neighbourhood in front of whoever is about to write
+// in it, and a list nobody reads does that no better than no list. Twenty-five
+// is roughly a screen: past that the answer is the count, and the honest thing
+// to say is that the boundary is too broad for this to help.
+const maxInventory = 25
+
+// Inventory lists the files that already exist inside a declared boundary,
+// with the total in case it was capped.
+//
+// This is the whole of vector's answer to an agent rebuilding something the
+// repository already has. It does not detect duplication — that needs a symbol
+// index, which is state vector would own and git would not give it, and which
+// is the line between a control layer and a framework. What it does is remove
+// the excuse: at the one moment the agent has declared where it intends to
+// write and has not written yet, it is told what is already there.
+//
+// Be clear about what kind of intervention this is. It is advice to a model,
+// and it works only if the model reads it and acts differently — the weakest
+// class of control there is, and the one this project spends its README
+// arguing against relying on. It is here because it costs a `git ls-files` and
+// nothing else, not because it will reliably work.
+func Inventory(root string, patterns []string) (files []string, total int) {
+	all, err := gitx.AllFiles(root)
+	if err != nil {
+		return nil, 0
+	}
+	rules := scope.Ruleset{Write: patterns, Declared: true}
+	for _, f := range all {
+		// Vector's own footprint, all of it — a wider exclusion than the audit
+		// makes, and deliberately so. The audit reports a change to policy.toml
+		// because editing the enforcement contract is exactly the event it
+		// exists to surface. This is answering a different question, and
+		// "there is a policy.toml" tells an agent nothing it can use.
+		if f == ".vector" || strings.HasPrefix(f, ".vector/") {
+			continue
+		}
+		if d, _ := rules.Decide(f); d != scope.Allowed {
+			continue
+		}
+		total++
+		if len(files) < maxInventory {
+			files = append(files, f)
+		}
+	}
+	return files, total
 }
 
 // NewScope writes a task scope file, refusing to clobber an existing one.

@@ -1,0 +1,8 @@
+objective = "answer a declared boundary with what already lives inside it"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "internal/setup/**",
+  "cmd/vector/**",
+]

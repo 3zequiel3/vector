@@ -370,8 +370,37 @@ func runScopeNew(args []string) int {
 		return exitUsage
 	}
 	fmt.Printf("%s written\n", path)
+	inventory(root, write)
 	fmt.Printf("  when done: vector audit -task %s\n", taskID)
 	return 0
+}
+
+// inventory answers a boundary with what already lives inside it.
+//
+// It is printed here rather than reported by a hook because this is the one
+// moment it can change anything: the agent has just said where it intends to
+// write and has not written yet. Ten seconds later it is building something,
+// and a list of neighbours is archaeology.
+//
+// It detects nothing. Vector cannot tell that ClientValidationService is the
+// CustomerValidator that was already there — that needs a symbol index, which
+// is state vector would own and git would not give it. This removes the excuse
+// instead, and it is advice to a model, which is the weakest kind of control
+// there is. It earns its place by costing one `git ls-files`.
+func inventory(root string, write []string) {
+	files, total := setup.Inventory(root, write)
+	switch {
+	case total == 0:
+		fmt.Println("  nothing exists inside this boundary yet")
+	case total > len(files):
+		fmt.Printf("  %d files already live inside this boundary — too many to be"+
+			" worth listing, which usually means the boundary is broader than the task\n", total)
+	default:
+		fmt.Printf("  %d file(s) already live inside this boundary — read before you add to it:\n", total)
+		for _, f := range files {
+			fmt.Printf("    %s\n", f)
+		}
+	}
 }
 
 const scopeExpandUsage = "usage: vector scope expand <id> -w <pattern> -reason <reason> -evidence <text>"
@@ -416,6 +445,10 @@ func runScopeExpand(args []string) int {
 	for _, w := range write {
 		fmt.Printf("  + %s\n", w)
 	}
+	// The same question applies to ground the boundary just grew onto, and it
+	// is asked about the new patterns alone: the original ones were answered
+	// when the scope was declared.
+	inventory(root, write)
 	return 0
 }
 
