@@ -9,7 +9,7 @@ vector lo nota, te lo dice y —donde puede— lo frena antes.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-164-green.svg)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-220-green.svg)](#desarrollo)
 [![Estado](https://img.shields.io/badge/estado-MVP-orange.svg)](#estado)
 [![Determinístico](https://img.shields.io/badge/llamadas%20a%20modelo-cero-black.svg)](#qué-no-es-vector)
 
@@ -285,6 +285,18 @@ Dos reglas deciden el veredicto:
 
 **El alcance le gana a la evidencia.** Un cambio que pasa todos los tests pero tocó archivos que nadie declaró sigue siendo `OUT_OF_SCOPE`. Los tests que pasan no autorizan el trabajo retroactivamente.
 
+**Nada es `VERIFIED` si el cambio editó a su propio juez.** Una suite con las aserciones borradas sale con código cero. Una suite borrada entera sale cero, fuerte y en verde — y METR observó reward hacking explícito en 39 de 128 corridas de o3 sobre RE-Bench sin pedirlo, con exactamente esos mecanismos. Así que cuando un cambio es sustractivo neto sobre los archivos de test del proyecto, el veredicto tiene techo y lo dice:
+
+```console
+PARTIALLY_VERIFIED — passed: lint, test, build — but this change removed
+6 line(s) from 1 test file and added 0 (total_test.go), so the suite that
+passed is not the suite that was there
+```
+
+Acá no hay parser ni contador de aserciones — eso es por lenguaje y se pudre. Lee `git diff --numstat`, que git ya había calculado. Nunca hace fallar un build: sacar líneas de un test es algo normal, y vector no puede distinguir una consolidación de un vaciado.
+
+**Un límite que no habla de migraciones no autoriza una.** Algunas rutas se escriben a propósito o no se escriben: migraciones, workflows de CI, terraform, material de claves. Cuando un cambio toca una y ningún patrón declarado era *sobre* ella, el veredicto tiene techo y la ruta se nombra. `migrations/**` declara una migración; `src/**` no, por más migraciones que vivan bajo `src`.
+
 | veredicto | significado | exit |
 | --- | --- | --- |
 | `VERIFIED` | en alcance, y pasó cada check declarado | 0 |
@@ -331,6 +343,12 @@ bloquea nada — es una señal de que puede haber un loop, y una herramienta que
 frena trabajo legítimo por una heurística se desinstala.
 
 `verify` no lo corre ningún hook. Correr la suite de tests al final de cada turno costaría más que el desperdicio que evita; `Stop` corre el audit barato y te deja a vos o a CI la pregunta cara.
+
+**En CI, pasá `-base`.** Un checkout limpio tiene el árbol de trabajo idéntico a `HEAD`, así que todo diff da vacío y una rama que vació sus tests hace tres commits parece no haber cambiado nada:
+
+```bash
+vector verify -base origin/main -json
+```
 
 ---
 
@@ -412,7 +430,7 @@ Ambos aceptan `-json` y emiten un schema versionado (`vector.audit/v1`, `vector.
 
 ## Estado
 
-Funcionando y usado sobre sí mismo: 11 comandos, 164 tests, cero llamadas a modelos, dos dependencias.
+Funcionando y usado sobre sí mismo: 11 comandos, 220 tests, cero llamadas a modelos, dos dependencias.
 
 Claude Code es el único agente cuyos hooks escribe `init` hoy. Codex, Cursor y Gemini exponen el mismo primitivo con otros nombres de evento, así que los adapters son traducción y no arquitectura nueva — pero no están escritos, y `doctor` va a reportar T2 honestamente en esos.
 
@@ -432,7 +450,7 @@ realmente en cada agente. Está en inglés, como el resto de los artefactos téc
 ## Desarrollo
 
 ```bash
-go test ./...        # 164 tests
+go test ./...        # 220 tests
 go vet ./...
 gofmt -l .
 ```

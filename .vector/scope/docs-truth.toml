@@ -1,0 +1,9 @@
+objective = "the documentation stops describing a tool that no longer exists"
+
+# Paths this task may write. Everything else is out of scope,
+# and a boundary that is never drawn cannot be crossed.
+write = [
+  "docs/**",
+  "README.md",
+  "README.es.md",
+]

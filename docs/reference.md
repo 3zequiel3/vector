@@ -127,13 +127,16 @@ vector -v | --version | version    print the version, exit 0
 ### `vector init`
 
 Detects the stack, writes `.vector/policy.toml`, and registers hooks in
-`.claude/settings.json`. Re-running is safe: `[stack]` and `[commands]` are
-regenerated from local evidence, `[scope]` and `[mode]` are preserved verbatim,
-and hook entries that already exist are not duplicated.
+`.claude/settings.json`. Re-running is safe: `[stack]` is regenerated from local
+evidence, `[scope]` and `[mode]` are preserved verbatim, hook entries that
+already exist are not duplicated, and an uncommented `[commands]` override
+survives — it is the one thing in that section a human decided.
 
 | Flag | Meaning |
 | --- | --- |
 | `-no-hooks` | write the policy but register nothing in the agent |
+| `-sandbox` | also configure the OS sandbox to deny the forbidden paths. Persisted in `policy.toml`, so a later bare `init` keeps it |
+| `-no-sandbox` | turn that off again. `uninstall` withdraws vector's entries but never disables the sandbox itself |
 
 Exit: 0 on success, 2 on a usage or configuration error (including a
 `.claude/settings.json` that is not valid JSON — it refuses to rewrite a file it
@@ -229,8 +232,15 @@ audit.
 | --- | --- | --- |
 | `-only <name>` | run just this check, repeatable: `typecheck`, `lint`, `test`, `build` | all declared |
 | `-task <id>` | scope to enforce for the conformance half | the active task |
+| `-base <ref>` | compare against this ref instead of HEAD | HEAD |
 | `-timeout <d>` | per-command timeout | `10m` |
 | `-json` | emit `vector.verify/v1` | |
+
+**In CI, pass `-base`.** A fresh checkout has a working tree identical to HEAD,
+so every diff is empty and a branch that gutted its tests three commits ago
+looks like no change at all. `-base origin/main` — or whatever the branch came
+from — is what makes the answer about the branch rather than about the last
+second of it.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
@@ -240,10 +250,29 @@ audit.
 | `OUT_OF_SCOPE` | the change left its boundary — reported even when every check passed | 1 |
 | `UNVERIFIED` | nothing ran | 1 |
 
-Two rules decide the verdict. Nothing is `VERIFIED` unless something actually
-ran — a repository that declares no test command has not been shown to work,
-however green the rest is. And scope outranks evidence: passing tests do not
-retroactively authorize files nobody declared.
+Four rules decide the verdict, and each one exists to stop a different way of
+looking finished.
+
+**Nothing is `VERIFIED` unless something actually ran.** A repository that
+declares no test command has not been shown to work, however green the rest is.
+
+**Scope outranks evidence.** Passing tests do not retroactively authorize files
+nobody declared.
+
+**Nothing is `VERIFIED` if the change edited its own judge.** A suite with its
+assertions deleted exits zero; a suite deleted outright exits zero, loudly and
+in green. So when a change is net-subtractive across the project's test files,
+the verdict is capped and says which files and by how many lines. It is never a
+failure — removing lines from a test is ordinary, and vector cannot tell a
+consolidation from a gutting. It reads `git diff --numstat`; there is no parser
+here and no assertion counter, and the known evasion is stated plainly in the
+package: adding more lines than you delete in the same file defeats it.
+
+**A boundary that is not about migrations does not authorize one.** Some paths
+are written deliberately or not at all — see `high_risk` below. When the change
+touches one and no declared pattern was *about* it, the verdict is capped and
+names the path. `migrations/**` declares a migration; `src/**` does not, however
+many migrations live under `src`.
 
 Checks run cheapest first — typecheck, lint, test, build — because a type error
 explains the test failures that follow. `verify` is never invoked by a hook:
@@ -279,6 +308,18 @@ on stdin, writes its response on stdout, and **exits 0 even when it fails** — 
 hook that errors loudly on every tool call is a hook people disable. (Calling it
 with no event at all is a usage error: exit 2.)
 
+`session-start` hands the agent the project's own verification commands and, if
+a task is active, what the last session left: the objective, how many times the
+boundary was widened, the last verdict with its age, and how many observations
+were recorded during it. A verdict whose files have changed since is reported as
+withdrawn rather than repeated — a session that has just started has no other
+memory, and "VERIFIED, three hours ago" is the one sentence it would believe.
+
+`stop` reports, at the end of a turn, whatever the evidence on disk supports:
+drift out of the boundary, a verdict gone stale, a task that looks like it is
+retrying in circles, and — when it has nothing else to say — that nobody has
+checked whether the change works. It returns context only. It never decides.
+
 Note the consequence: a broken vector cannot break your agent, and it also
 cannot tell you it is broken. That is what `vector doctor` is for.
 
@@ -286,8 +327,8 @@ cannot tell you it is broken. That is what `vector doctor` is for.
 
 | Schema | Emitted by | Top-level fields |
 | --- | --- | --- |
-| `vector.audit/v1` | `vector audit -json` | `schema`, `status`, `task_id`, `objective`, `enforcement`, `base`, `expansions`, `changed_files`, `in_scope`, `findings` |
-| `vector.verify/v1` | `vector verify -json` | `schema`, `verdict`, `reason`, `scope` (a full `vector.audit/v1` report), `checks` |
+| `vector.audit/v1` | `vector audit -json` | `schema`, `status`, `task_id`, `objective`, `enforcement`, `base`, `expansions`, `changed_files`, `bookkeeping`, `in_scope`, `findings`, `high_risk`, `undeclared_risk` |
+| `vector.verify/v1` | `vector verify -json` | `schema`, `verdict`, `reason`, `scope` (a full `vector.audit/v1` report), `checks`, `retry` |
 | `vector.doctor/v1` | `vector doctor -json` | `schema`, `root`, `enforcement_tier`, `checks` |
 
 Gate on the JSON field, never on the presence of output.
@@ -314,18 +355,50 @@ tolerate — `level` was never a closed set of two.
 
 | Path | What it is | In git? | Owner |
 | --- | --- | --- | --- |
-| `.vector/policy.toml` | the repository contract: detected stack, detected verification commands, always-forbidden paths, enforcement mode | **yes** | split. `[stack]` and `[commands]` are regenerated by `init`; `[scope]` and `[mode]` are yours and survive verbatim |
+| `.vector/policy.toml` | the repository contract: detected stack, verification commands, always-forbidden and high-risk paths, enforcement mode | **yes** | split. `[stack]` is regenerated by `init`; `[scope]`, `[mode]` and any uncommented `[commands]` override are yours and survive verbatim |
 | `.vector/scope/<id>.toml` | one task's declared boundary, plus the appended record of every expansion and its evidence | **yes** — this is the reviewable artifact | the agent writes it via `scope new` / `scope expand`; you read it |
 | `.vector/observations.md` | append-only log of what the agent noticed and did not act on | **yes** | the agent appends; nothing rewrites it |
 | `.vector/current` | the active task id, so `audit` and the hooks work without `-task` | **no** — gitignored | per-developer working state, like `.git/HEAD`. Committing it would make every teammate's checkout fight over whose task is current |
-| `.vector/.gitignore` | contains exactly `current` | **yes** | written once by `init`, never overwritten |
+| `.vector/nudged` | which sessions have already been asked to declare a scope, so the ask happens once | **no** — gitignored | per-developer working state |
+| `.vector/attempts` | one line per `verify` run: task, verdict, size of the diff. Answers whether a task is going in circles | **no** — gitignored | compacted at 64 KiB to the last 200 records |
+| `.vector/verdicts` | the last verdict per task, with a git blob hash for every file it covered, so a verdict can be told from a stale one | **no** — gitignored | at most 8 tasks, capped at 256 KiB |
+| `.vector/.gitignore` | lists the four files above that stay out of git | **yes** | `init` adds missing entries and never rewrites the file, so a repository set up before an entry existed still gets it |
 | `.claude/settings.json` | your agent's settings. `init` merges three hook entries into `hooks`; `uninstall` removes exactly those | **yes**, usually | **yours.** vector merges, never replaces: other hooks, permissions and settings survive both operations, and a file it cannot parse is refused rather than rewritten |
 
-The always-forbidden defaults cover `.vector/**`, `.claude/settings*.json`,
-`.claude/hooks/**`, `.codex/hooks.json`, `.cursor/hooks.json`, `.env` and
-`.env.*`. The first two matter most: an agent that can edit the configuration
-constraining it is not constrained, and `vector doctor` reports a policy that
-does not cover `.vector/` as a **failure**, not a warning.
+### The two path lists in `[scope]`
+
+`always_forbidden` is denied, in every mode, hook and sandbox alike. The
+defaults cover `.vector/**`, `.claude/settings*.json`, `.claude/hooks/**`,
+`.codex/hooks.json`, `.cursor/hooks.json`, `.env` and `.env.*`. The first two
+matter most: an agent that can edit the configuration constraining it is not
+constrained, and `vector doctor` reports a policy that does not cover
+`.vector/` as a **failure**, not a warning.
+
+`high_risk` is never denied. It names the paths that are written deliberately
+or not at all — a migration, a workflow, a terraform plan, a private key. They
+are reported on every status, including `IN SCOPE`, because a line that appears
+only when something else already went wrong is missing from every run where it
+mattered. And they cannot be authorized by accident: the pattern that allows one
+must itself be about it.
+
+| Default | Why |
+| --- | --- |
+| `**/migrations/**` | schema changes outlive the task that made them |
+| `.github/workflows/**`, `.gitlab-ci.yml`, `Jenkinsfile` | CI config is the supply chain |
+| `**/*.tf`, `**/*.tfvars` | infrastructure, applied later by something else |
+| `Dockerfile`, `**/docker-compose*.yml` | what actually ships |
+| `**/*.pem`, `**/*.p12`, `**/*.pfx` | key material |
+
+Three obvious entries are **deliberately absent**, because each fires on
+ordinary work and a rule that cries wolf on Tuesday is switched off by Friday.
+`**/auth/**` is the canonical example in every write-up of this failure and also
+matches `src/auth/LoginButton.tsx`. `**/migrate/**` matches any Go package named
+`migrate` and every vendored copy of `golang-migrate`. `**/*.key` matches
+Keynote decks, because an extension is not content.
+
+Add what your project means in one line. Set `high_risk = []` to turn the rule
+off entirely — omitting the key keeps the defaults, writing an empty list is a
+decision.
 
 ---
 
@@ -334,7 +407,7 @@ does not cover `.vector/` as a **failure**, not a warning.
 | Tier | Mechanism | Guarantee | Reached today? |
 | --- | --- | --- | --- |
 | **T5** interception | native `PreToolUse` hook | high, with [~5% documented leaks](https://github.com/anthropics/claude-code/issues/45427) — subagents, Bash heredocs, silent hook failures | **yes, on Claude Code only** |
-| **T3** confinement | OS sandbox (Seatbelt, bubblewrap) | absolute — survives a bypassed hook | **no.** vector does not configure, launch or verify a sandbox |
+| **T3** confinement | OS sandbox (Seatbelt, bubblewrap) | absolute — survives a bypassed hook, and covers writes vector cannot see | **opt-in**, with `vector init -sandbox`. vector configures it and reports whether it is on; it does not launch it, and the agent's own runtime enforces it |
 | **T2** observation | `git diff` against the boundary | detection is total; prevention is none | **yes, always** |
 | **T1** advice | `AGENTS.md`, `CLAUDE.md` | none | out of scope — vector writes neither |
 
@@ -342,6 +415,36 @@ Counter-intuitively, **T2 is more reliable than T5**. A hook has measured leaks;
 a set operation over git cannot fail. T2 does not prevent, but it never lies.
 That is why `audit` remains the tool's centre of gravity even where a hook is
 installed.
+
+It is also the one mechanism here that survives the boundaries every other one
+breaks at. A hook can fail to fire for a subagent, can have its denial ignored,
+can go unloaded on `--resume`, and needs to know which agent is asking — a field
+several agents document and do not reliably supply. `git diff` needs none of
+that. It does not depend on a hook having fired, on the agent cooperating, or on
+knowing who wrote the line, and a compaction cannot lose it. What T2 gives up is
+prevention. What it never gives up is being true.
+
+### What the sandbox actually covers
+
+`vector init -sandbox` sets `sandbox.enabled` in `.claude/settings.json` and
+adds the always-forbidden paths to `sandbox.filesystem.denyWrite`. Three things
+follow, and the third is the one worth knowing:
+
+- Enabling it at all confines writes to the working directory, which closes
+  writes outside the repository.
+- Claude Code then protects its own configuration natively, and those
+  protections cannot be lifted by any allow rule. vector's entries add what that
+  list does not cover: secrets, vector's own configuration, and whatever the
+  project forbids.
+- **It is not a per-task boundary.** The sandbox is configured once, at session
+  start, and a scope changes per task. Out-of-scope writes to ordinary files
+  inside the repository stay where they were: the hook prevents them, and the
+  diff audit detects them. T3 covers the paths that are wrong in every task, not
+  the ones that are wrong in this one.
+
+`vector uninstall` withdraws vector's `denyWrite` entries and deliberately
+leaves `sandbox.enabled` alone: turning off a protection the repository asked
+for, on the way out, is not uninstalling.
 
 ### What is actually wired
 

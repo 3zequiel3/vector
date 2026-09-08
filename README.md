@@ -9,7 +9,7 @@ vector notices, tells you, and — where it can — stops it first.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8.svg)](go.mod)
-[![Tests](https://img.shields.io/badge/tests-164-green.svg)](#development)
+[![Tests](https://img.shields.io/badge/tests-220-green.svg)](#development)
 [![Status](https://img.shields.io/badge/status-MVP-orange.svg)](#status)
 [![Deterministic](https://img.shields.io/badge/model%20calls-zero-black.svg)](#what-vector-is-not)
 
@@ -279,6 +279,18 @@ Two rules decide the verdict:
 
 **Scope outranks evidence.** A change that passes every test but touched files nobody declared is still `OUT_OF_SCOPE`. Passing tests do not retroactively authorize the work.
 
+**Nothing is `VERIFIED` if the change edited its own judge.** A suite with its assertions deleted exits zero. A suite deleted outright exits zero, loudly and in green — and METR saw explicit reward hacking in 39 of 128 unprompted runs of o3 on RE-Bench, with exactly those mechanisms. So when a change is net-subtractive across the project's test files, the verdict is capped and says so:
+
+```console
+PARTIALLY_VERIFIED — passed: lint, test, build — but this change removed
+6 line(s) from 1 test file and added 0 (total_test.go), so the suite that
+passed is not the suite that was there
+```
+
+There is no parser here and no assertion counter — those are per-language and they rot. It reads `git diff --numstat`, which git had already computed. It never fails a build: removing lines from a test is ordinary, and vector cannot tell a consolidation from a gutting.
+
+**A boundary that is not about migrations does not authorize one.** Some paths are written deliberately or not at all: migrations, CI workflows, terraform, key material. When a change touches one and no declared pattern was *about* it, the verdict is capped and the path is named. `migrations/**` declares a migration; `src/**` does not, however many migrations live under `src`.
+
 | verdict | meaning | exit |
 | --- | --- | --- |
 | `VERIFIED` | in scope, and every declared check passed | 0 |
@@ -325,6 +337,12 @@ does not explain. A passing run ends the streak. Nothing is ever blocked on this
 work on a heuristic gets uninstalled.
 
 `verify` is never run by a hook. Running a test suite at the end of every turn would cost more than the waste it prevents; `Stop` runs the cheap scope audit and leaves the expensive question to you or to CI.
+
+**In CI, pass `-base`.** A fresh checkout has a working tree identical to `HEAD`, so every diff is empty and a branch that gutted its tests three commits ago looks like no change at all:
+
+```bash
+vector verify -base origin/main -json
+```
 
 ---
 
@@ -406,7 +424,7 @@ Both accept `-json` and emit a versioned schema (`vector.audit/v1`, `vector.doct
 
 ## Status
 
-Working and dogfooded: 11 commands, 164 tests, zero model calls, two dependencies.
+Working and dogfooded: 11 commands, 220 tests, zero model calls, two dependencies.
 
 Claude Code is the only agent whose hooks `init` writes today. Codex, Cursor and Gemini expose the same primitive under different event names, so the adapters are translation rather than new architecture — but they are not written yet, and `doctor` will honestly report T2 on those.
 
@@ -426,7 +444,7 @@ reached on which agent.
 ## Development
 
 ```bash
-go test ./...        # 164 tests
+go test ./...        # 220 tests
 go vet ./...
 gofmt -l .
 ```
