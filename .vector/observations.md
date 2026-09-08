@@ -38,3 +38,12 @@ sessionStart appends a sentence period directly after the joined verification co
 - action: defer
 
 Private key material (*.pem, *.p12, *.pfx) is high_risk but not always_forbidden, so it is reported after the fact and never denied — while .env and .env.* ARE forbidden and denied unconditionally in every mode. A private key is arguably the more dangerous of the two: .env compromises a process, a host key compromises a host. Moving them to always_forbidden would deny writes in every mode, which breaks the legitimate case of generating test fixtures — that case already has an escape hatch in 'scope expand -reason security'. Raised by a risk review of the high_risk feature; left as the user's product decision rather than changed unilaterally, because it changes what vector blocks.
+
+## OBS-005
+- date: 2026-09-08
+- task: provenance
+- category: correctness
+- severity: medium
+- action: defer
+
+The pre-tool hook resolves shell redirect targets against the repository root, and cannot know the command did 'cd' first. Reproduced: a Bash command that ran 'cd ~/Proyectos/other && printf x > .env' was DENIED as a write to this repository's .env, which it never touched. Forbidden paths deny in every mode, so this is a hard block on legitimate work in another directory, not an advisory note. Over-inclusion is the documented safe direction for detection, but a deny that stops work in a repository vector is not watching is a different cost. Possible narrowing: only treat a relative redirect as in-repo when the command contains no 'cd'.
